@@ -74,8 +74,20 @@ fn options() -> Lzma2Options {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let name = env::args().nth(1).expect("provide a workload name");
-    let input = input_for(&name);
+    let args: Vec<_> = env::args().skip(1).collect();
+    let (name, input) = match args.as_slice() {
+        [flag, path] if flag == "--file" => {
+            let input = std::fs::read(path)?;
+            let name = std::path::Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(path)
+                .to_owned();
+            (name, input)
+        }
+        [name] => (name.clone(), input_for(name)),
+        _ => return Err("usage: library_benchmark <zeros-1g|text-16m|random-16m> | --file PATH".into()),
+    };
     let options = options();
     let estimated_memory_kib = options.lzma_options.get_memory_usage();
 
