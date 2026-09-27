@@ -97,6 +97,18 @@ impl Hash234 {
         LzEncoder::normalize(&mut self.hash3_table, offset);
         LzEncoder::normalize(&mut self.hash4_table, offset);
     }
+
+    #[cfg(test)]
+    pub(crate) fn state(&self) -> (&[i32], &[i32], &[i32], i32, i32, i32) {
+        (
+            &self.hash2_table,
+            &self.hash3_table,
+            &self.hash4_table,
+            self.hash2_value,
+            self.hash3_value,
+            self.hash4_value,
+        )
+    }
 }
 
 static CRC_TABLE: &[u32] = &[
