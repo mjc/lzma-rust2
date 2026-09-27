@@ -86,7 +86,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             (name, input)
         }
         [name] => (name.clone(), input_for(name)),
-        _ => return Err("usage: library_benchmark <zeros-1g|text-16m|random-16m> | --file PATH".into()),
+        _ => {
+            return Err(
+                "usage: library_benchmark <zeros-1g|text-16m|random-16m> | --file PATH".into(),
+            );
+        }
     };
     let options = options();
     let estimated_memory_kib = options.lzma_options.get_memory_usage();
