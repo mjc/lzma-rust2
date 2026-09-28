@@ -7,6 +7,7 @@ const HASH2_MASK: u32 = HASH2_SIZE - 1;
 const HASH3_SIZE: u32 = 1 << 16;
 const HASH3_MASK: u32 = HASH3_SIZE - 1;
 
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub struct Hash234 {
     hash2_table: Vec<i32>,
     hash3_table: Vec<i32>,
@@ -96,18 +97,6 @@ impl Hash234 {
         LzEncoder::normalize(&mut self.hash2_table, offset);
         LzEncoder::normalize(&mut self.hash3_table, offset);
         LzEncoder::normalize(&mut self.hash4_table, offset);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn state(&self) -> (&[i32], &[i32], &[i32], i32, i32, i32) {
-        (
-            &self.hash2_table,
-            &self.hash3_table,
-            &self.hash4_table,
-            self.hash2_value,
-            self.hash3_value,
-            self.hash4_value,
-        )
     }
 }
 

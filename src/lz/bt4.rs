@@ -15,8 +15,6 @@ pub(crate) struct Bt4 {
     continuation_pos: i32,
     continuation_delta: i32,
     continuation_nice_len: i32,
-    #[cfg(test)]
-    bulk_enabled: bool,
 }
 
 const MAX_POS: i32 = 0x7FFFFFFF;
@@ -46,8 +44,6 @@ impl Bt4 {
             continuation_pos: -2,
             continuation_delta: 0,
             continuation_nice_len: 0,
-            #[cfg(test)]
-            bulk_enabled: true,
         }
     }
 
@@ -74,7 +70,7 @@ impl Bt4 {
         avail
     }
 
-    fn skip(
+    fn skip_tree(
         &mut self,
         encoder: &mut super::LzEncoderData,
         nice_len_limit: i32,
@@ -156,11 +152,6 @@ impl Bt4 {
     /// the same byte value. The scalar skip has already inserted the current
     /// node and established the continuation proof before this is called.
     fn bulk_constant_run(&mut self, encoder: &mut super::LzEncoderData, remaining: i32) -> i32 {
-        #[cfg(test)]
-        if !self.bulk_enabled {
-            return 0;
-        }
-
         let nice_len = self.continuation_nice_len;
         if remaining <= 0
             || self.continuation_pos != self.lz_pos
@@ -213,6 +204,23 @@ impl Bt4 {
         self.hash.update_tables(self.lz_pos);
         self.continuation_pos = self.lz_pos;
         matched
+    }
+
+    fn skip_one(&mut self, encoder: &mut super::LzEncoderData) {
+        let mut nice_len_limit = encoder.nice_len as i32;
+        let avail = self.move_pos(encoder);
+
+        if avail < nice_len_limit {
+            if avail == 0 {
+                return;
+            }
+            nice_len_limit = avail;
+        }
+
+        self.hash.calc_hashes(encoder.read_buffer());
+        let current_match = self.hash.get_hash4_pos();
+        self.hash.update_tables(self.lz_pos);
+        self.skip_tree(encoder, nice_len_limit, current_match);
     }
 }
 
@@ -286,7 +294,7 @@ impl MatchFind for Bt4 {
             // Return if it is long enough (niceLen or reached the end of
             // the dictionary).
             if len_best >= nice_len_limit {
-                self.skip(encoder, nice_len_limit, current_match);
+                self.skip_tree(encoder, nice_len_limit, current_match);
                 return;
             }
         }
@@ -366,21 +374,7 @@ impl MatchFind for Bt4 {
             len -= 1;
             n
         } {
-            let mut nice_len_limit = encoder.nice_len as i32;
-            let avail = self.move_pos(encoder);
-
-            if avail < nice_len_limit {
-                if avail == 0 {
-                    continue;
-                }
-                nice_len_limit = avail;
-            }
-
-            self.hash.calc_hashes(encoder.read_buffer());
-            let current_match = self.hash.get_hash4_pos();
-            self.hash.update_tables(self.lz_pos);
-
-            self.skip(encoder, nice_len_limit, current_match);
+            self.skip_one(encoder);
         }
     }
 }
@@ -403,12 +397,17 @@ mod tests {
         encoder.data.finishing = finishing;
 
         let mut finder = Bt4::new(dict_size, nice_len, 8);
-        finder.bulk_enabled = bulk_enabled;
         for _ in 0..2 {
             finder.find_matches(&mut encoder.data, &mut encoder.matches);
         }
         for &chunk in chunks {
-            MatchFind::skip(&mut finder, &mut encoder.data, chunk);
+            if bulk_enabled {
+                MatchFind::skip(&mut finder, &mut encoder.data, chunk);
+            } else {
+                for _ in 0..chunk {
+                    finder.skip_one(&mut encoder.data);
+                }
+            }
         }
         (finder, encoder)
     }
@@ -417,7 +416,7 @@ mod tests {
         let (bulk_finder, bulk_encoder) = bulk;
         let (scalar_finder, scalar_encoder) = scalar;
         assert_eq!(bulk_finder.tree, scalar_finder.tree);
-        assert_eq!(bulk_finder.hash.state(), scalar_finder.hash.state());
+        assert_eq!(bulk_finder.hash, scalar_finder.hash);
         assert_eq!(bulk_finder.lz_pos, scalar_finder.lz_pos);
         assert_eq!(bulk_finder.cyclic_pos, scalar_finder.cyclic_pos);
         assert_eq!(bulk_finder.continuation_pos, scalar_finder.continuation_pos);
@@ -455,14 +454,13 @@ mod tests {
 
     #[test]
     fn bulk_constant_run_stops_before_position_normalization() {
-        fn run(bulk_enabled: bool) -> (Bt4, LzEncoder) {
+        fn run(use_bulk: bool) -> (Bt4, LzEncoder) {
             let mut encoder = LzEncoder::new_bt4(64, 0, 0, 16, 32, 8);
             encoder.data.buf.fill(b'a');
             encoder.data.read_pos = 16;
             encoder.data.write_pos = 128;
 
             let mut finder = Bt4::new(64, 16, 8);
-            finder.bulk_enabled = bulk_enabled;
             finder.lz_pos = MAX_POS - 3;
             finder.cyclic_pos = 8;
             finder.continuation_pos = finder.lz_pos;
@@ -474,7 +472,13 @@ mod tests {
             finder.tree[child] = 11;
             finder.tree[child + 1] = 12;
 
-            MatchFind::skip(&mut finder, &mut encoder.data, 5);
+            if use_bulk {
+                MatchFind::skip(&mut finder, &mut encoder.data, 5);
+            } else {
+                for _ in 0..5 {
+                    finder.skip_one(&mut encoder.data);
+                }
+            }
             (finder, encoder)
         }
 
@@ -541,7 +545,7 @@ mod tests {
                         }
                         _ => unreachable!(),
                     }
-                    finder.skip(&mut encoder.data, limit as i32, nodes[0]);
+                    finder.skip_tree(&mut encoder.data, limit as i32, nodes[0]);
                     assert_eq!(
                         finder.tree, expected,
                         "prefix={prefix}, first_is_lower={first_is_lower}, third_byte={third_byte}"
@@ -576,7 +580,7 @@ mod tests {
                     let pair = current_match as usize * 2;
                     finder.tree[pair] = 21;
                     finder.tree[pair + 1] = 22;
-                    finder.skip(&mut encoder.data, limit as i32, current_match);
+                    finder.skip_tree(&mut encoder.data, limit as i32, current_match);
                     let expected = if mismatch == limit {
                         [21, 22]
                     } else if previous_byte < b'm' {
@@ -648,8 +652,8 @@ mod tests {
         let (mut continued, mut baseline, mut encoder) = finder_and_encoder(case);
         let current_match = continued.lz_pos - case.delta;
         let nice_len_limit = case.nice_len.min(case.avail) as i32;
-        continued.skip(&mut encoder.data, nice_len_limit, current_match);
-        baseline.skip(&mut encoder.data, nice_len_limit, current_match);
+        continued.skip_tree(&mut encoder.data, nice_len_limit, current_match);
+        baseline.skip_tree(&mut encoder.data, nice_len_limit, current_match);
 
         assert_eq!(continued.tree, baseline.tree);
     }
@@ -711,8 +715,8 @@ mod tests {
         baseline.cyclic_pos = finder.cyclic_pos;
         baseline.tree.clone_from(&finder.tree);
         let current_match = finder.lz_pos - 3;
-        finder.skip(&mut encoder.data, 8, current_match);
-        baseline.skip(&mut encoder.data, 8, current_match);
+        finder.skip_tree(&mut encoder.data, 8, current_match);
+        baseline.skip_tree(&mut encoder.data, 8, current_match);
         assert_eq!(finder.tree, baseline.tree);
     }
 }
