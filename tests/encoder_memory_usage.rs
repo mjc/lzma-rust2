@@ -1,0 +1,102 @@
+#![cfg(feature = "encoder")]
+
+use lzma_rust2::LzmaOptions;
+
+#[test]
+fn memory_estimate_accounts_for_custom_literal_contexts() {
+    for preset in [0, 5] {
+        let mut options = LzmaOptions::with_preset(preset);
+        let default_kib = options.get_memory_usage();
+
+        options.lc = 8;
+        options.lp = 4;
+
+        // 4,096 literal models use 6,144 KiB; the default eight use 12 KiB.
+        assert_eq!(options.get_memory_usage(), default_kib + 6_144 - 12);
+    }
+}
+
+#[test]
+fn memory_estimate_tracks_literal_context_and_position_bits() {
+    for preset in 0..=9 {
+        let mut options = LzmaOptions::with_preset(preset);
+        let default_kib = options.get_memory_usage();
+
+        for lc in 0..=8 {
+            for lp in 0..=4 {
+                options.lc = lc;
+                options.lp = lp;
+                let literal_kib = (1536u32 << (lc + lp)).div_ceil(1024);
+                assert_eq!(
+                    options.get_memory_usage(),
+                    default_kib - 12 + literal_kib,
+                    "preset={preset}, lc={lc}, lp={lp}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn memory_estimate_saturates_on_unrepresentable_literal_models() {
+    for preset in [0, 5] {
+        let mut options = LzmaOptions::with_preset(preset);
+        for (lc, lp) in [(22, 0), (32, 0), (0, 32), (u32::MAX, 1), (1, u32::MAX)] {
+            options.lc = lc;
+            options.lp = lp;
+            assert_eq!(options.get_memory_usage(), u32::MAX);
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+mod round_trips {
+    use std::io::{Read, Write};
+
+    use lzma_rust2::{Lzma2Options, Lzma2Reader, Lzma2Writer, LzmaReader, LzmaWriter};
+
+    use super::*;
+
+    #[test]
+    fn custom_literal_contexts_round_trip() {
+        let data = include_bytes!("../LICENSE");
+
+        for preset in [0, 5] {
+            for (lc, lp) in [(0, 0), (0, 4), (4, 0), (3, 1), (8, 0), (8, 4)] {
+                let mut options = LzmaOptions::with_preset(preset);
+                options.dict_size = 1 << 16;
+                options.lc = lc;
+                options.lp = lp;
+
+                let mut writer = LzmaWriter::new_use_header(Vec::new(), &options, None).unwrap();
+                writer.write_all(data).unwrap();
+                let compressed = writer.finish().unwrap();
+                let mut decoded = Vec::new();
+                LzmaReader::new_mem_limit(compressed.as_slice(), u32::MAX, None)
+                    .unwrap()
+                    .read_to_end(&mut decoded)
+                    .unwrap();
+                assert_eq!(decoded, data, "LZMA1: preset={preset}, lc={lc}, lp={lp}");
+
+                // LZMA2 supports only lc + lp <= 4.
+                if lc + lp <= 4 {
+                    let dict_size = options.dict_size;
+                    let mut writer = Lzma2Writer::new(
+                        Vec::new(),
+                        Lzma2Options {
+                            lzma_options: options,
+                            chunk_size: None,
+                        },
+                    );
+                    writer.write_all(data).unwrap();
+                    let compressed = writer.finish().unwrap();
+                    let mut decoded = Vec::new();
+                    Lzma2Reader::new(compressed.as_slice(), dict_size, None)
+                        .read_to_end(&mut decoded)
+                        .unwrap();
+                    assert_eq!(decoded, data, "LZMA2: preset={preset}, lc={lc}, lp={lp}");
+                }
+            }
+        }
+    }
+}

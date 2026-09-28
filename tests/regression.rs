@@ -191,6 +191,33 @@ mod allocation_tracking {
 }
 
 #[test]
+fn encoder_memory_estimate_tracks_literal_allocations() {
+    let allocation = |options: &LzmaOptions| {
+        allocation_tracking::peak(|| {
+            drop(LzmaWriter::new_no_header(std::io::sink(), options, true).unwrap());
+        }) as i64
+    };
+
+    for preset in [0, 5] {
+        let mut options = LzmaOptions::with_preset(preset);
+        options.dict_size = 1 << 16;
+        let default_bytes = allocation(&options);
+        let default_kib = i64::from(options.get_memory_usage());
+
+        for (lc, lp) in [(0, 0), (0, 4), (4, 0), (8, 0), (8, 4)] {
+            options.lc = lc;
+            options.lp = lp;
+            let allocated_growth = allocation(&options) - default_bytes;
+            let estimated_growth = (i64::from(options.get_memory_usage()) - default_kib) * 1024;
+            assert!(
+                (0..1024).contains(&(estimated_growth - allocated_growth)),
+                "preset={preset}, lc={lc}, lp={lp}: estimated {estimated_growth}, allocated {allocated_growth}"
+            );
+        }
+    }
+}
+
+#[test]
 fn xz_rejects_multiple_lzma2_filters() {
     let mut input = b"\xfd7zXZ\0\0\0".to_vec();
     input.extend_from_slice(&crc32(&[0, 0]).to_le_bytes());
