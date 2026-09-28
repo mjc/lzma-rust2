@@ -58,10 +58,6 @@ required-features = ["std", "xz"]
 name = "xz_writer"
 required-features = ["std", "encoder", "xz"]
 
-[[example]]
-name = "library_benchmark"
-required-features = ["std", "encoder", "xz"]
-
 [[bench]]
 name = "comparison"
 harness = false
