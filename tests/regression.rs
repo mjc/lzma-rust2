@@ -192,9 +192,12 @@ mod allocation_tracking {
 
 #[test]
 fn encoder_memory_estimate_tracks_literal_allocations() {
+    let input = include_bytes!("../LICENSE");
     let allocation = |options: &LzmaOptions| {
         allocation_tracking::peak(|| {
-            drop(LzmaWriter::new_no_header(std::io::sink(), options, true).unwrap());
+            let mut writer = LzmaWriter::new_no_header(std::io::sink(), options, true).unwrap();
+            writer.write_all(input).unwrap();
+            writer.finish().unwrap();
         }) as i64
     };
 
