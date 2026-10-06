@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add opt-in parallel BT4 match finding through `Lzma2Writer::new_parallel_match_finder`.
+
 - Add a bounded, streaming `Bcj2Writer` with four raw outputs and configurable branch conversion limits.
 - Add `Bcj2Reader::finish` for strict input completion.
 - Add `Bcj2Reader::try_new` for checked stream counts.
@@ -16,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add cooperative cancellation to `Lzma2WriterMt`, reported as `EncoderCancelled`.
 
 ### Fixed
+
+- Keep position normalization outside the hot advance path.
 
 - Allow the range encoder to defer more than 4 GiB of bytes in very long streams.
 - Bound pending worker jobs and ordered results in multi-threaded writers and the LZIP reader.
