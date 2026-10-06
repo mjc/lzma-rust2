@@ -9,13 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add opt-in parallel BT4 match finding through `Lzma2Writer::new_parallel_match_finder`.
 - Add `Bcj2Reader::finish` for strict input completion.
 - Add `Bcj2Reader::try_new` for checked stream counts.
-- Add opt-in parallel BT4 match finding through `Lzma2Writer::new_parallel_match_finder`.
 
 ### Fixed
 
-- Keep position normalization outside the hot advance path.
 - Retry interrupted BCJ2 reads without losing fragmented branch addresses.
 - Reject truncated BCJ2 streams and incomplete branch addresses.
 - Validate the BCJ2 range stream even when the declared output is empty.
@@ -29,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decoding anything.
 - Fix `LzmaStream` growing the dictionary to the size declared in the header within its first decode pass.
 - Fix the XZ index parser reserving memory for the record count the index declares before reading any records.
+- Keep position normalization outside the hot advance path.
 
 ## 0.21.0 - 2026-09-18
 
