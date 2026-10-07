@@ -38,6 +38,7 @@ impl Hc4 {
         }
     }
 
+    #[inline(always)]
     fn move_pos(&mut self, encoder: &mut LzEncoderData) -> i32 {
         let avail = encoder.move_pos(4, 4);
         if avail != 0 {
