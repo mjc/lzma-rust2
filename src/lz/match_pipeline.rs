@@ -77,10 +77,14 @@ impl Queues {
         if state.stopped {
             return None;
         }
+        let wake = state.results.is_empty();
         state.result_positions += batch.len();
         state.results.push_back(batch);
         let recycled = state.recycled.pop().unwrap_or_default();
-        self.results_ready.notify_one();
+        drop(state);
+        if wake {
+            self.results_ready.notify_one();
+        }
         Some(recycled)
     }
 }
@@ -239,7 +243,7 @@ impl MatchPipeline {
     }
 
     pub(super) fn input(&mut self, mut bytes: &[u8]) -> io::Result<()> {
-        let queues = Arc::clone(&self.queues);
+        let queues = &self.queues;
         let mut state = queues.lock();
         if state.stopped {
             drop(state);
@@ -248,6 +252,7 @@ impl MatchPipeline {
         if bytes.len() > queues.input_capacity - state.input_bytes {
             return Err(io::Error::other("match finder input window exceeded"));
         }
+        let wake = state.inputs.is_empty();
         state.input_bytes += bytes.len();
         if let Some(Input::Bytes(tail)) = state.inputs.back_mut() {
             let count = bytes.len().min(INPUT_SIZE - tail.len());
@@ -259,7 +264,10 @@ impl MatchPipeline {
                 .chunks(INPUT_SIZE)
                 .map(|bytes| Input::Bytes(bytes.to_vec())),
         );
-        queues.input_ready.notify_one();
+        drop(state);
+        if wake {
+            queues.input_ready.notify_one();
+        }
         Ok(())
     }
 
@@ -294,7 +302,7 @@ impl MatchPipeline {
     }
 
     fn advance_batch(&mut self) -> io::Result<()> {
-        let queues = Arc::clone(&self.queues);
+        let queues = &self.queues;
         let mut state = queues
             .results_ready
             .wait_while(queues.lock(), |state| {
@@ -308,6 +316,7 @@ impl MatchPipeline {
             if old.len() == POSITIONS && state.recycled.len() < 2 {
                 state.recycled.push(old);
             }
+            drop(state);
             queues.result_space.notify_one();
         } else {
             drop(state);
