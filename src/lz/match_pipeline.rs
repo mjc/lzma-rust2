@@ -105,7 +105,7 @@ struct MatchBatch {
 }
 
 impl MatchBatch {
-    fn prepare(&mut self, nice_len: u32, positions: usize) {
+    fn prepare(&mut self, positions: usize) {
         // Only reuse full slabs for full slabs. A large allocation must not
         // become an arbitrarily small queued result after fragmented input.
         if positions != POSITIONS && self.offsets.capacity() > positions + 1 {
@@ -116,12 +116,17 @@ impl MatchBatch {
         self.offsets.reserve_exact(positions + 1);
         self.offsets.push(0);
         self.pairs.clear();
-        self.pairs
-            .reserve_exact(positions * (nice_len as usize - 1));
+        self.pairs.reserve_exact(positions);
     }
 
-    fn push(&mut self, matches: &Matches) {
+    fn push(&mut self, matches: &Matches, pair_limit: usize) {
         let count = matches.count as usize;
+        if count > self.pairs.capacity() - self.pairs.len() {
+            let required = self.pairs.len() + count;
+            // Cap geometric growth at the bound used by the memory estimate.
+            let capacity = required.max((2 * self.pairs.capacity()).min(pair_limit));
+            self.pairs.reserve_exact(capacity - self.pairs.len());
+        }
         self.pairs.extend(
             matches.len[..count]
                 .iter()
@@ -199,7 +204,8 @@ impl MatchPipeline {
                     let positions = (data.write_pos - data.read_pos - required).max(0) as usize;
                     for start in (0..positions).step_by(POSITIONS) {
                         let count = (positions - start).min(POSITIONS);
-                        batch.prepare(data.nice_len, count);
+                        batch.prepare(count);
+                        let pair_limit = count * (data.nice_len as usize - 1);
                         for _ in 0..count {
                             match &mut finder {
                                 MatchFinders::Bt4(finder) => {
@@ -209,7 +215,7 @@ impl MatchPipeline {
                                     finder.find_matches(&mut data, &mut matches)
                                 }
                             }
-                            batch.push(&matches);
+                            batch.push(&matches, pair_limit);
                         }
                         batch = match worker_queues.publish(batch) {
                             Some(recycled) => recycled,
@@ -393,7 +399,7 @@ mod tests {
     #[test]
     fn skipping_results_keeps_the_next_match_at_its_offset() {
         let mut batch = MatchBatch::default();
-        batch.prepare(32, 5);
+        batch.prepare(5);
         let mut matches = Matches::new(31);
         for count in [2, 0, 3, 1, 2] {
             matches.count = count;
@@ -401,7 +407,7 @@ mod tests {
                 matches.len[i] = count + i as u32;
                 matches.dist[i] = i as i32;
             }
-            batch.push(&matches);
+            batch.push(&matches, 5 * 31);
         }
         batch.position += 3;
         batch.next(Some(&mut matches));
@@ -415,15 +421,45 @@ mod tests {
     #[test]
     fn recycled_slabs_do_not_inflate_fragmented_result_memory() {
         let mut batch = MatchBatch::default();
-        batch.prepare(64, POSITIONS);
+        batch.prepare(POSITIONS);
         let offsets = batch.offsets.as_ptr();
         let pairs = batch.pairs.as_ptr();
-        batch.prepare(64, POSITIONS);
+        batch.prepare(POSITIONS);
         assert_eq!(batch.offsets.as_ptr(), offsets);
         assert_eq!(batch.pairs.as_ptr(), pairs);
-        batch.prepare(64, 1);
+        batch.prepare(1);
         assert_eq!(batch.offsets.capacity(), 2);
-        assert_eq!(batch.pairs.capacity(), 63);
+        assert_eq!(batch.pairs.capacity(), 1);
+    }
+
+    #[test]
+    fn result_storage_grows_with_matches_without_exceeding_the_bound() {
+        let mut batch = MatchBatch::default();
+        batch.prepare(3);
+        assert_eq!(batch.pairs.capacity(), 3);
+        let mut matches = Matches::new(63);
+        matches.count = 63;
+        for i in 0..63 {
+            matches.len[i] = i as u32 + 2;
+            matches.dist[i] = i as i32;
+        }
+        for _ in 0..3 {
+            batch.push(&matches, 3 * 63);
+            assert!(batch.pairs.capacity() <= 3 * 63);
+        }
+        assert_eq!(batch.pairs.len(), 3 * 63);
+        assert_eq!(batch.offsets, [0, 63, 126, 189]);
+        matches.count = 0;
+        for _ in 0..3 {
+            batch.next(Some(&mut matches));
+            assert_eq!(matches.count, 63);
+            assert_eq!(matches.len[62], 64);
+            assert_eq!(matches.dist[62], 62);
+        }
+        let pairs = batch.pairs.as_ptr();
+        batch.prepare(3);
+        assert_eq!(batch.pairs.as_ptr(), pairs);
+        assert_eq!(batch.pairs.capacity(), 3 * 63);
     }
 
     fn pipeline() -> MatchPipeline {
