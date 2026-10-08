@@ -163,6 +163,7 @@ impl MatchPipeline {
             .spawn(move || {
                 let _exit = WorkerExit(Arc::clone(&worker_queues));
                 let mut matches = Matches::new(data.nice_len as usize - 1);
+                let mut repeat = super::bt4::RepeatMatch::default();
                 for input in std::iter::from_fn(|| worker_queues.input()) {
                     match input {
                         Input::Bytes(bytes) => {
@@ -185,7 +186,14 @@ impl MatchPipeline {
                         let count = (positions - start).min(POSITIONS);
                         let mut batch = MatchBatch::new(data.nice_len, count);
                         for _ in 0..count {
-                            finder.find_matches(&mut data, &mut matches);
+                            match &mut finder {
+                                MatchFinders::Bt4(finder) => {
+                                    finder.find_matches_cached(&mut data, &mut matches, &mut repeat)
+                                }
+                                MatchFinders::Hc4(finder) => {
+                                    finder.find_matches(&mut data, &mut matches)
+                                }
+                            }
                             batch.push(&matches);
                         }
                         if !worker_queues.publish(batch) {

@@ -19,12 +19,63 @@ pub(crate) struct Bt4 {
 
 const MAX_POS: i32 = 0x7FFFFFFF;
 
+#[cfg(feature = "std")]
+#[derive(Default)]
+pub(super) struct RepeatMatch {
+    distance: i32,
+    remaining: i32,
+}
+
 #[inline(always)]
 fn sh_left(i: i32) -> i32 {
     ((i as u32) << 1) as i32
 }
 
 impl Bt4 {
+    #[cfg(feature = "std")]
+    pub(super) fn find_matches_cached(
+        &mut self,
+        encoder: &mut super::LzEncoderData,
+        matches: &mut Matches,
+        repeat: &mut RepeatMatch,
+    ) {
+        let nice_len = encoder.nice_len as i32;
+        if repeat.remaining >= nice_len && self.lz_pos + 1 != MAX_POS {
+            self.hash
+                .calc_hashes(&encoder.buf[(encoder.read_pos + 1) as usize..]);
+            let next_pos = self.lz_pos + 1;
+            // Both short hashes must select the verified repeat. Otherwise the
+            // normal search may return an additional match at another distance.
+            if next_pos - self.hash.get_hash2_pos() == repeat.distance
+                && next_pos - self.hash.get_hash3_pos() == repeat.distance
+            {
+                let current_match = self.hash.get_hash4_pos();
+                self.move_pos(encoder);
+                self.hash.update_tables(self.lz_pos);
+                self.skip_tree(encoder, nice_len, current_match);
+                matches.count = 1;
+                matches.len[0] = encoder.nice_len;
+                matches.dist[0] = repeat.distance - 1;
+                repeat.remaining -= 1;
+                return;
+            }
+        }
+        self.find_matches(encoder, matches);
+        // A short-hash collision can require a normal search without changing
+        // the verified repeat. Keep that span instead of scanning it again.
+        repeat.remaining = (repeat.remaining - 1).max(0);
+        if matches.count == 1 && matches.len[0] == encoder.nice_len {
+            let distance = matches.dist[0] + 1;
+            if repeat.distance != distance || repeat.remaining < nice_len {
+                repeat.distance = distance;
+                // This cache is confined to the worker. Its length, rather than a
+                // buffer index, remains valid when the sliding window moves.
+                repeat.remaining =
+                    encoder.get_match_len(matches.dist[0], encoder.get_avail()) as i32 - 1;
+            }
+        }
+    }
+
     pub(crate) fn new(dict_size: u32, nice_len: u32, depth_limit: i32) -> Self {
         let cyclic_size = dict_size as i32 + 1;
 
@@ -714,6 +765,88 @@ mod tests {
                         "limit={limit}, mismatch={mismatch}, previous={previous_byte}"
                     );
                 }
+            }
+        }
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn short_hash_collisions_keep_the_verified_repeat_span() {
+        let input: Vec<_> = (0..4096).map(|i| (i % 251) as u8).collect();
+        let mut data = LzEncoder::new_bt4(4096, 4096, 4096, 64, 64, 32).data;
+        assert_eq!(data.fill_window(&input), input.len());
+        let mut finder = Bt4::new(4096, 64, 32);
+        let mut matches = Matches::new(63);
+        let mut repeat = RepeatMatch::default();
+        for _ in 0..1024 {
+            if repeat.remaining > 128 {
+                finder
+                    .hash
+                    .calc_hashes(&data.buf[(data.read_pos + 1) as usize..]);
+                let next = finder.lz_pos + 1;
+                if next - finder.hash.get_hash2_pos() != repeat.distance
+                    || next - finder.hash.get_hash3_pos() != repeat.distance
+                {
+                    // A verified prefix can be shorter than the available
+                    // input. A collision must not make us rescan beyond it.
+                    repeat.remaining = 128;
+                    finder.find_matches_cached(&mut data, &mut matches, &mut repeat);
+                    assert_eq!(repeat.distance, 251);
+                    assert_eq!(repeat.remaining, 127);
+                    return;
+                }
+            }
+            finder.find_matches_cached(&mut data, &mut matches, &mut repeat);
+        }
+        panic!("periodic input did not exercise a short-hash collision");
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn cached_repeat_matches_preserve_every_match_and_tree_update() {
+        let mut state = 0x1234_5678_u32;
+        let input: Vec<_> = (0..512 * 1024 + 31)
+            .map(|i| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                match (i / 8192) % 4 {
+                    0 => 0,
+                    1 => (i % 251) as u8,
+                    2 => (state & 255) as u8,
+                    _ => ((i / 127) % 256) as u8,
+                }
+            })
+            .collect();
+        for nice in [16, 64, 273] {
+            let mut data = LzEncoder::new_bt4(4096, 4096, 4096, nice, nice, 32).data;
+            let mut oracle_data = data.clone();
+            let mut finder = Bt4::new(4096, nice, 32);
+            let mut oracle = Bt4::new(4096, nice, 32);
+            let mut matches = Matches::new(nice as usize - 1);
+            let mut expected = Matches::new(nice as usize - 1);
+            let mut repeat = RepeatMatch::default();
+            for bytes in input.chunks(4097).chain(std::iter::once(&[][..])) {
+                if bytes.is_empty() {
+                    data.set_finishing();
+                    oracle_data.set_finishing();
+                } else {
+                    assert_eq!(data.fill_window(bytes), bytes.len());
+                    assert_eq!(oracle_data.fill_window(bytes), bytes.len());
+                }
+                let required = if data.finishing { 4 } else { nice as i32 };
+                let count = (data.write_pos - data.read_pos - required).max(0);
+                for _ in 0..count {
+                    finder.find_matches_cached(&mut data, &mut matches, &mut repeat);
+                    oracle.find_matches(&mut oracle_data, &mut expected);
+                    let n = matches.count as usize;
+                    assert_eq!(matches.count, expected.count);
+                    assert_eq!(matches.len[..n], expected.len[..n]);
+                    assert_eq!(matches.dist[..n], expected.dist[..n]);
+                }
+                assert_eq!(finder.tree, oracle.tree);
+                assert_eq!(finder.lz_pos, oracle.lz_pos);
+                assert_eq!(finder.cyclic_pos, oracle.cyclic_pos);
             }
         }
     }
