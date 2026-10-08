@@ -70,13 +70,13 @@ impl Queues {
         let mut state = self
             .result_space
             .wait_while(self.lock(), |state| {
-                state.result_positions + batch.counts.len() > RESULT_POSITIONS && !state.stopped
+                state.result_positions + batch.len() > RESULT_POSITIONS && !state.stopped
             })
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.stopped {
             return false;
         }
-        state.result_positions += batch.counts.len();
+        state.result_positions += batch.len();
         state.results.push_back(batch);
         self.results_ready.notify_one();
         true
@@ -93,16 +93,17 @@ impl Drop for WorkerExit {
 
 #[derive(Default)]
 struct MatchBatch {
-    counts: Vec<u16>,
+    offsets: Vec<u32>,
     pairs: Vec<(u32, i32)>,
     position: usize,
-    pair: usize,
 }
 
 impl MatchBatch {
     fn new(nice_len: u32, positions: usize) -> Self {
+        let mut offsets = Vec::with_capacity(positions + 1);
+        offsets.push(0);
         Self {
-            counts: Vec::with_capacity(positions),
+            offsets,
             pairs: Vec::with_capacity(positions * (nice_len as usize - 1)),
             ..Self::default()
         }
@@ -110,32 +111,34 @@ impl MatchBatch {
 
     fn push(&mut self, matches: &Matches) {
         let count = matches.count as usize;
-        self.counts.push(count as u16);
         self.pairs.extend(
             matches.len[..count]
                 .iter()
                 .copied()
                 .zip(matches.dist[..count].iter().copied()),
         );
+        self.offsets.push(self.pairs.len() as u32);
+    }
+
+    fn len(&self) -> usize {
+        self.offsets.len().saturating_sub(1)
     }
 
     fn exhausted(&self) -> bool {
-        self.position == self.counts.len()
+        self.position == self.len()
     }
 
     fn next(&mut self, matches: Option<&mut Matches>) {
-        let count = usize::from(self.counts[self.position]);
+        let start = self.offsets[self.position] as usize;
+        let end = self.offsets[self.position + 1] as usize;
         if let Some(matches) = matches {
-            matches.count = count as u32;
-            for (index, &(length, distance)) in
-                self.pairs[self.pair..self.pair + count].iter().enumerate()
-            {
+            matches.count = (end - start) as u32;
+            for (index, &(length, distance)) in self.pairs[start..end].iter().enumerate() {
                 matches.len[index] = length;
                 matches.dist[index] = distance;
             }
         }
         self.position += 1;
-        self.pair += count;
     }
 }
 
@@ -219,9 +222,10 @@ impl MatchPipeline {
         3 * window_size
             + 2 * INPUT_SIZE as u64
             + (RESULT_POSITIONS as u64 + 2 * POSITIONS as u64)
-                * (std::mem::size_of::<u16>() as u64
+                * (std::mem::size_of::<u32>() as u64
                     + nice_len.saturating_sub(1) * std::mem::size_of::<(u32, i32)>() as u64)
-            + RESULT_POSITIONS as u64 * std::mem::size_of::<MatchBatch>() as u64
+            + (RESULT_POSITIONS as u64 + 2)
+                * (std::mem::size_of::<MatchBatch>() + std::mem::size_of::<u32>()) as u64
             + (window_size / INPUT_SIZE as u64 + 2) * std::mem::size_of::<Input>() as u64
     }
 
@@ -274,24 +278,28 @@ impl MatchPipeline {
 
     fn next(&mut self, matches: Option<&mut Matches>) -> io::Result<()> {
         if self.batch.exhausted() {
-            let queues = Arc::clone(&self.queues);
-            let mut state = queues
-                .results_ready
-                .wait_while(queues.lock(), |state| {
-                    state.results.is_empty() && !state.stopped
-                })
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let batch = state.results.pop_front();
-            if let Some(batch) = batch {
-                state.result_positions -= batch.counts.len();
-                queues.result_space.notify_one();
-                self.batch = batch;
-            } else {
-                drop(state);
-                return Err(self.disconnected());
-            }
+            self.advance_batch()?;
         }
         self.batch.next(matches);
+        Ok(())
+    }
+
+    fn advance_batch(&mut self) -> io::Result<()> {
+        let queues = Arc::clone(&self.queues);
+        let mut state = queues
+            .results_ready
+            .wait_while(queues.lock(), |state| {
+                state.results.is_empty() && !state.stopped
+            })
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(batch) = state.results.pop_front() {
+            state.result_positions -= batch.len();
+            queues.result_space.notify_one();
+            self.batch = batch;
+        } else {
+            drop(state);
+            return Err(self.disconnected());
+        }
         Ok(())
     }
 
@@ -319,10 +327,23 @@ impl MatchPipeline {
 
     #[inline(never)]
     pub(super) fn skip(&mut self, data: &mut LzEncoderData, count: usize) -> io::Result<()> {
-        (0..count).try_for_each(|_| match data.move_pos(data.nice_len as i32, 4) {
-            0 => Ok(()),
-            _ => self.next(None),
-        })
+        let required = if data.finishing {
+            4
+        } else {
+            data.nice_len as i32
+        };
+        let mut ready = ((data.write_pos - data.read_pos - required).max(0) as usize).min(count);
+        data.read_pos += count as i32;
+        data.pending_size += (count - ready) as u32;
+        while ready != 0 {
+            if self.batch.exhausted() {
+                self.advance_batch()?;
+            }
+            let n = ready.min(self.batch.len() - self.batch.position);
+            self.batch.position += n;
+            ready -= n;
+        }
+        Ok(())
     }
 
     fn disconnected(&mut self) -> io::Error {
@@ -346,6 +367,27 @@ impl Drop for MatchPipeline {
 #[cfg(test)]
 mod tests {
     use super::{super::LzEncoder, *};
+
+    #[test]
+    fn skipping_results_keeps_the_next_match_at_its_offset() {
+        let mut batch = MatchBatch::new(32, 5);
+        let mut matches = Matches::new(31);
+        for count in [2, 0, 3, 1, 2] {
+            matches.count = count;
+            for i in 0..count as usize {
+                matches.len[i] = count + i as u32;
+                matches.dist[i] = i as i32;
+            }
+            batch.push(&matches);
+        }
+        batch.position += 3;
+        batch.next(Some(&mut matches));
+        assert_eq!(matches.count, 1);
+        assert_eq!(matches.len[0], 1);
+        assert_eq!(matches.dist[0], 0);
+        batch.next(None);
+        assert!(batch.exhausted());
+    }
 
     fn pipeline() -> MatchPipeline {
         let encoder = LzEncoder::new_bt4(64 * 1024, 4096, 4096, 32, 273, 32);
