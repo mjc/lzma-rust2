@@ -121,19 +121,30 @@ impl MatchBatch {
 
     fn push(&mut self, matches: &Matches, pair_limit: usize) {
         let count = matches.count as usize;
-        if count > self.pairs.capacity() - self.pairs.len() {
-            let required = self.pairs.len() + count;
-            // Cap geometric growth at the bound used by the memory estimate.
-            let capacity = required.max((2 * self.pairs.capacity()).min(pair_limit));
-            self.pairs.reserve_exact(capacity - self.pairs.len());
+        if count == 1 {
+            if self.pairs.len() == self.pairs.capacity() {
+                self.grow(1, pair_limit);
+            }
+            self.pairs.push((matches.len[0], matches.dist[0]));
+        } else if count != 0 {
+            if count > self.pairs.capacity() - self.pairs.len() {
+                self.grow(count, pair_limit);
+            }
+            self.pairs.extend(
+                matches.len[..count]
+                    .iter()
+                    .copied()
+                    .zip(matches.dist[..count].iter().copied()),
+            );
         }
-        self.pairs.extend(
-            matches.len[..count]
-                .iter()
-                .copied()
-                .zip(matches.dist[..count].iter().copied()),
-        );
         self.offsets.push(self.pairs.len() as u32);
+    }
+
+    fn grow(&mut self, count: usize, pair_limit: usize) {
+        let required = self.pairs.len() + count;
+        // Cap geometric growth at the bound used by the memory estimate.
+        let capacity = required.max((2 * self.pairs.capacity()).min(pair_limit));
+        self.pairs.reserve_exact(capacity - self.pairs.len());
     }
 
     fn len(&self) -> usize {
