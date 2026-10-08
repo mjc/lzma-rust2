@@ -56,11 +56,7 @@ impl Bt4 {
         if avail != 0 {
             self.lz_pos += 1;
             if self.lz_pos == MAX_POS {
-                self.continuation_pos = -2;
-                let normalization_offset = MAX_POS - self.cyclic_size;
-                self.hash.normalize(normalization_offset);
-                LzEncoder::normalize(&mut self.tree, normalization_offset);
-                self.lz_pos -= normalization_offset;
+                self.normalize_positions();
             }
             self.cyclic_pos += 1;
             if self.cyclic_pos == self.cyclic_size {
@@ -68,6 +64,16 @@ impl Bt4 {
             }
         }
         avail
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn normalize_positions(&mut self) {
+        self.continuation_pos = -2;
+        let normalization_offset = MAX_POS - self.cyclic_size;
+        self.hash.normalize(normalization_offset);
+        LzEncoder::normalize(&mut self.tree, normalization_offset);
+        self.lz_pos -= normalization_offset;
     }
 
     fn skip_tree(
