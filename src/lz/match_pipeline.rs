@@ -23,6 +23,7 @@ struct QueueState {
     input_bytes: usize,
     results: VecDeque<MatchBatch>,
     result_positions: usize,
+    recycled: Vec<MatchBatch>,
     stopped: bool,
 }
 
@@ -66,7 +67,7 @@ impl Queues {
         Some(input)
     }
 
-    fn publish(&self, batch: MatchBatch) -> bool {
+    fn publish(&self, batch: MatchBatch) -> Option<MatchBatch> {
         let mut state = self
             .result_space
             .wait_while(self.lock(), |state| {
@@ -74,12 +75,13 @@ impl Queues {
             })
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.stopped {
-            return false;
+            return None;
         }
         state.result_positions += batch.len();
         state.results.push_back(batch);
+        let recycled = state.recycled.pop().unwrap_or_default();
         self.results_ready.notify_one();
-        true
+        Some(recycled)
     }
 }
 
@@ -99,14 +101,19 @@ struct MatchBatch {
 }
 
 impl MatchBatch {
-    fn new(nice_len: u32, positions: usize) -> Self {
-        let mut offsets = Vec::with_capacity(positions + 1);
-        offsets.push(0);
-        Self {
-            offsets,
-            pairs: Vec::with_capacity(positions * (nice_len as usize - 1)),
-            ..Self::default()
+    fn prepare(&mut self, nice_len: u32, positions: usize) {
+        // Only reuse full slabs for full slabs. A large allocation must not
+        // become an arbitrarily small queued result after fragmented input.
+        if positions != POSITIONS && self.offsets.capacity() > positions + 1 {
+            *self = Self::default();
         }
+        self.position = 0;
+        self.offsets.clear();
+        self.offsets.reserve_exact(positions + 1);
+        self.offsets.push(0);
+        self.pairs.clear();
+        self.pairs
+            .reserve_exact(positions * (nice_len as usize - 1));
     }
 
     fn push(&mut self, matches: &Matches) {
@@ -167,6 +174,7 @@ impl MatchPipeline {
                 let _exit = WorkerExit(Arc::clone(&worker_queues));
                 let mut matches = Matches::new(data.nice_len as usize - 1);
                 let mut repeat = super::bt4::RepeatMatch::default();
+                let mut batch = MatchBatch::default();
                 for input in std::iter::from_fn(|| worker_queues.input()) {
                     match input {
                         Input::Bytes(bytes) => {
@@ -187,7 +195,7 @@ impl MatchPipeline {
                     let positions = (data.write_pos - data.read_pos - required).max(0) as usize;
                     for start in (0..positions).step_by(POSITIONS) {
                         let count = (positions - start).min(POSITIONS);
-                        let mut batch = MatchBatch::new(data.nice_len, count);
+                        batch.prepare(data.nice_len, count);
                         for _ in 0..count {
                             match &mut finder {
                                 MatchFinders::Bt4(finder) => {
@@ -199,9 +207,10 @@ impl MatchPipeline {
                             }
                             batch.push(&matches);
                         }
-                        if !worker_queues.publish(batch) {
-                            return;
-                        }
+                        batch = match worker_queues.publish(batch) {
+                            Some(recycled) => recycled,
+                            None => return,
+                        };
                     }
                     if data.finishing {
                         return;
@@ -221,10 +230,10 @@ impl MatchPipeline {
         // may produce one-position slabs, so include their metadata as well.
         3 * window_size
             + 2 * INPUT_SIZE as u64
-            + (RESULT_POSITIONS as u64 + 2 * POSITIONS as u64)
+            + (RESULT_POSITIONS as u64 + 4 * POSITIONS as u64)
                 * (std::mem::size_of::<u32>() as u64
                     + nice_len.saturating_sub(1) * std::mem::size_of::<(u32, i32)>() as u64)
-            + (RESULT_POSITIONS as u64 + 2)
+            + (RESULT_POSITIONS as u64 + 4)
                 * (std::mem::size_of::<MatchBatch>() + std::mem::size_of::<u32>()) as u64
             + (window_size / INPUT_SIZE as u64 + 2) * std::mem::size_of::<Input>() as u64
     }
@@ -292,10 +301,14 @@ impl MatchPipeline {
                 state.results.is_empty() && !state.stopped
             })
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(batch) = state.results.pop_front() {
+        let batch = state.results.pop_front();
+        if let Some(batch) = batch {
             state.result_positions -= batch.len();
+            let old = std::mem::replace(&mut self.batch, batch);
+            if old.len() == POSITIONS && state.recycled.len() < 2 {
+                state.recycled.push(old);
+            }
             queues.result_space.notify_one();
-            self.batch = batch;
         } else {
             drop(state);
             return Err(self.disconnected());
@@ -370,7 +383,8 @@ mod tests {
 
     #[test]
     fn skipping_results_keeps_the_next_match_at_its_offset() {
-        let mut batch = MatchBatch::new(32, 5);
+        let mut batch = MatchBatch::default();
+        batch.prepare(32, 5);
         let mut matches = Matches::new(31);
         for count in [2, 0, 3, 1, 2] {
             matches.count = count;
@@ -387,6 +401,20 @@ mod tests {
         assert_eq!(matches.dist[0], 0);
         batch.next(None);
         assert!(batch.exhausted());
+    }
+
+    #[test]
+    fn recycled_slabs_do_not_inflate_fragmented_result_memory() {
+        let mut batch = MatchBatch::default();
+        batch.prepare(64, POSITIONS);
+        let offsets = batch.offsets.as_ptr();
+        let pairs = batch.pairs.as_ptr();
+        batch.prepare(64, POSITIONS);
+        assert_eq!(batch.offsets.as_ptr(), offsets);
+        assert_eq!(batch.pairs.as_ptr(), pairs);
+        batch.prepare(64, 1);
+        assert_eq!(batch.offsets.capacity(), 2);
+        assert_eq!(batch.pairs.capacity(), 63);
     }
 
     fn pipeline() -> MatchPipeline {
