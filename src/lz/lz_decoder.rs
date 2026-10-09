@@ -183,7 +183,11 @@ impl LzDecoder {
         debug_assert!(back < self.pos);
         debug_assert!(left > 0);
 
-        if dist >= left {
+        if dist == 0 {
+            let byte = self.buf[back];
+            self.buf[self.pos..self.pos + left].fill(byte);
+            self.pos += left;
+        } else if dist >= left {
             // No overlap possible. We can copy directly.
             let (src_part, dst_part) = self.buf.split_at_mut(self.pos);
             dst_part[..left].copy_from_slice(&src_part[back..back + left]);
@@ -352,5 +356,34 @@ mod tests {
     fn ensure_capacity_rejects_impossible_size() {
         let mut lz = LzDecoder::new(usize::MAX, None);
         assert!(lz.ensure_capacity().is_err());
+    }
+
+    #[test]
+    fn zero_distance_repeat_fills_previous_byte() {
+        let mut lz = LzDecoder::new(16, None);
+        lz.set_limit(9).unwrap();
+        lz.put_byte(0xA5);
+        lz.repeat(0, 8).unwrap();
+
+        assert_eq!(&lz.buf[..9], &[0xA5; 9]);
+    }
+
+    #[test]
+    fn zero_distance_repeat_handles_dictionary_wrap_and_pending_output() {
+        let mut lz = LzDecoder::new(8, None);
+        lz.set_limit(8).unwrap();
+        (0..8).for_each(|byte| lz.put_byte(byte));
+        let mut flushed = [0; 8];
+        assert_eq!(lz.flush(&mut flushed, 0).unwrap(), 8);
+        assert_eq!(flushed, [0, 1, 2, 3, 4, 5, 6, 7]);
+
+        lz.set_limit(2).unwrap();
+        lz.repeat(0, 5).unwrap();
+        assert_eq!(lz.pos, 2);
+        assert_eq!(lz.pending_len, 3);
+
+        lz.set_limit(4).unwrap();
+        lz.repeat_pending().unwrap();
+        assert_eq!(&lz.buf[..5], &[7; 5]);
     }
 }
