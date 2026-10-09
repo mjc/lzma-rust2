@@ -33,8 +33,7 @@ fn sha256_hex(input: &[u8]) -> String {
         .collect()
 }
 
-#[test]
-fn bt4_word_scan_preserves_reference_bitstream() {
+fn assert_reference_bitstream(parallel: bool) {
     let input = boundary_payload();
     // Captured from 0.21.0's unmodified BT4 encoder before applying the scan
     // optimization. These check encoded decisions as well as round-trip data.
@@ -68,7 +67,11 @@ fn bt4_word_scan_preserves_reference_bitstream() {
         options.lzma_options.dict_size = 4096;
         options.lzma_options.nice_len = nice_len;
         options.lzma_options.depth_limit = 32;
-        let mut writer = Lzma2Writer::new(Vec::new(), options);
+        let mut writer = if parallel {
+            Lzma2Writer::new_parallel_match_finder(Vec::new(), options).unwrap()
+        } else {
+            Lzma2Writer::new(Vec::new(), options)
+        };
         for part in input.chunks(997) {
             writer.write_all(part).unwrap();
         }
@@ -84,4 +87,14 @@ fn bt4_word_scan_preserves_reference_bitstream() {
             .unwrap();
         assert_eq!(decoded, input);
     }
+}
+
+#[test]
+fn bt4_word_scan_preserves_reference_bitstream() {
+    assert_reference_bitstream(false);
+}
+
+#[test]
+fn parallel_bt4_word_scan_preserves_reference_bitstream() {
+    assert_reference_bitstream(true);
 }
