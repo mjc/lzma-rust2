@@ -67,8 +67,13 @@ pub fn xz_mt_decode(data: &[u8]) -> Option<()> {
         XzReader::new_mem_limit(stream, allow_multiple_streams, MEM_LIMIT_KB),
         header[1],
     );
-    let parallel = XzReaderMt::new(Cursor::new(stream), allow_multiple_streams, workers)
-        .and_then(|reader| read_bounded(reader, header[1]));
+    let parallel = XzReaderMt::new_mem_limit(
+        Cursor::new(stream),
+        allow_multiple_streams,
+        MEM_LIMIT_KB,
+        workers,
+    )
+    .and_then(|reader| read_bounded(reader, header[1]));
     compare_successes(serial, parallel);
     Some(())
 }
