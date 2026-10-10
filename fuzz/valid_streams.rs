@@ -25,6 +25,27 @@ pub fn payload(size: usize) -> Vec<u8> {
         .collect()
 }
 
+pub fn bcj2_payload(size: usize) -> Vec<u8> {
+    const BRANCHES: [u8; 18] = [
+        0x90, 0xE8, 0x04, 0, 0, 0, 0x90, 0xE9, 0x08, 0, 0, 0, 0x0F, 0x85, 0x02, 0, 0, 0,
+    ];
+    BRANCHES.into_iter().cycle().take(size).collect()
+}
+
+pub fn bcj2(payload: &[u8]) -> [Vec<u8>; 4] {
+    let options = lzma_rust2::filter::bcj2::Bcj2Options {
+        uncompressed_size: Some(payload.len() as u64),
+        ..Default::default()
+    };
+    let outputs = core::array::from_fn(|_| Vec::new());
+    let mut writer = lzma_rust2::filter::bcj2::Bcj2Writer::new(outputs, &options).unwrap();
+    for chunk in payload.chunks(7) {
+        writer.write_all(chunk).unwrap();
+        writer.flush().unwrap();
+    }
+    writer.finish().unwrap()
+}
+
 pub fn lzma2(payload: &[u8]) -> Vec<u8> {
     let mut writer = Lzma2Writer::new(Vec::new(), lzma2_options());
     writer.write_all(payload).unwrap();

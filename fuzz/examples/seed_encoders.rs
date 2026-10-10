@@ -4,6 +4,9 @@ use std::{fs, path::Path};
 
 #[path = "../regression_input.rs"]
 mod regression_input;
+#[path = "../valid_streams.rs"]
+#[allow(dead_code)]
+mod valid_streams;
 
 fn main() -> std::io::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("corpus");
@@ -99,6 +102,20 @@ fn main() -> std::io::Result<()> {
         ("xz-threaded", [128, 2, 20, 3]),
     ] {
         fs::write(directory.join(name), settings)?;
+    }
+
+    let directory = root.join("bcj2_roundtrip");
+    fs::create_dir_all(&directory)?;
+    let payload = valid_streams::bcj2_payload(16_384);
+    for (name, header) in [
+        ("one-byte-chunks", [0, 0, 0]),
+        ("known-size-flushed", [5, 1, 1]),
+        ("large-chunks", [17, 3, 0]),
+    ] {
+        fs::write(
+            directory.join(name),
+            [header.as_slice(), payload.as_slice()].concat(),
+        )?;
     }
     Ok(())
 }

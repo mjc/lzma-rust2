@@ -87,10 +87,22 @@ fn main() -> std::io::Result<()> {
         let (lzma_raw_known, _, _) = valid_streams::lzma_raw(&payload, false);
         let lzma2 = valid_streams::lzma2(&payload);
         let lzip = valid_streams::lzip(&payload);
+        let bcj2_payload = valid_streams::bcj2_payload(size);
+        let bcj2_streams = valid_streams::bcj2(&bcj2_payload);
 
         write_direct_seed(&root, &["lzma"], name, &lzma)?;
         write_direct_seed(&root, &["lzma2"], name, &lzma2)?;
         write_direct_seed(&root, &["lzip"], name, &lzip)?;
+
+        let mut bcj2_seed = Vec::new();
+        bcj2_seed.extend_from_slice(&(bcj2_payload.len() as u16).to_le_bytes());
+        for stream in bcj2_streams.iter().take(3) {
+            bcj2_seed.extend_from_slice(&(stream.len() as u16).to_le_bytes());
+        }
+        for stream in &bcj2_streams {
+            bcj2_seed.extend_from_slice(stream);
+        }
+        write_direct_seed(&root, &["bcj2_decode"], name, &bcj2_seed)?;
 
         let plan = [0x00, 0x11, 0x22, 0x33, 0x66, 0x99, 0xCC, 0xFF];
         let lzma_plan = [[0; 8].as_slice(), plan.as_slice()].concat();
