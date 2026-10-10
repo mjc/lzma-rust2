@@ -637,8 +637,9 @@ impl<R: Read + Seek> Drop for XzReaderMt<R> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io::Read as _;
+
+    use super::*;
 
     #[test]
     fn decompress_block_shorter_than_checksum_errs() {
