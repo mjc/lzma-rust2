@@ -219,6 +219,43 @@ fn bench_decompression_lzma2(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_decompression_lzma2_zero_run(c: &mut Criterion) {
+    const INPUT_SIZE: usize = 32 * 1024 * 1024;
+
+    let input = vec![0; INPUT_SIZE];
+    let options = Lzma2Options::with_preset(3);
+    let mut compressed = Vec::new();
+    let mut writer = Lzma2Writer::new(&mut compressed, options.clone());
+    writer.write_all(&input).unwrap();
+    writer.finish().unwrap();
+
+    let mut decoded = Vec::new();
+    let mut reader = Lzma2Reader::new(
+        Cursor::new(compressed.as_slice()),
+        options.lzma_options.dict_size,
+        None,
+    );
+    reader.read_to_end(&mut decoded).unwrap();
+    assert_eq!(decoded, input);
+
+    let mut group = c.benchmark_group("decompression lzma2 repeated bytes");
+    group.throughput(Throughput::Bytes(INPUT_SIZE as u64));
+    group.sample_size(25);
+    group.bench_function("lzma-rust2 preset 3", |b| {
+        b.iter(|| {
+            let mut decoded = Vec::with_capacity(INPUT_SIZE);
+            let mut reader = Lzma2Reader::new(
+                Cursor::new(black_box(compressed.as_slice())),
+                options.lzma_options.dict_size,
+                None,
+            );
+            reader.read_to_end(black_box(&mut decoded)).unwrap();
+            black_box(decoded);
+        });
+    });
+    group.finish();
+}
+
 fn bench_compression_mt(c: &mut Criterion) {
     let mut group = c.benchmark_group("compression mt");
     group.throughput(Throughput::Bytes(TEST_DATA.len() as u64));
@@ -349,6 +386,7 @@ criterion_group!(
     bench_compression_mt,
     bench_decompression_lzma,
     bench_decompression_lzma2,
+    bench_decompression_lzma2_zero_run,
     bench_decompression_mt,
 );
 criterion_main!(benches);
