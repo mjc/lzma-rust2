@@ -40,6 +40,14 @@ pub fn lzma(payload: &[u8]) -> Vec<u8> {
     writer.finish().unwrap()
 }
 
+pub fn lzma_raw(payload: &[u8], use_end_marker: bool) -> (Vec<u8>, u8, u32) {
+    let options = lzma2_options().lzma_options;
+    let mut writer = LzmaWriter::new_no_header(Vec::new(), &options, use_end_marker).unwrap();
+    let props = writer.props();
+    writer.write_all(payload).unwrap();
+    (writer.finish().unwrap(), props, options.dict_size)
+}
+
 pub fn xz(payload: &[u8], check_type: CheckType) -> Vec<u8> {
     let lzma_options = lzma2_options().lzma_options;
     let mut writer = XzWriter::new(
