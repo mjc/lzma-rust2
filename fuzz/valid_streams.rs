@@ -25,6 +25,7 @@ pub fn payload(size: usize) -> Vec<u8> {
         .collect()
 }
 
+#[allow(dead_code)]
 pub fn bcj2_payload(size: usize) -> Vec<u8> {
     const BRANCHES: [u8; 18] = [
         0x90, 0xE8, 0x04, 0, 0, 0, 0x90, 0xE9, 0x08, 0, 0, 0, 0x0F, 0x85, 0x02, 0, 0, 0,
@@ -32,6 +33,7 @@ pub fn bcj2_payload(size: usize) -> Vec<u8> {
     BRANCHES.into_iter().cycle().take(size).collect()
 }
 
+#[allow(dead_code)]
 pub fn bcj2(payload: &[u8]) -> [Vec<u8>; 4] {
     let options = lzma_rust2::filter::bcj2::Bcj2Options {
         uncompressed_size: Some(payload.len() as u64),
