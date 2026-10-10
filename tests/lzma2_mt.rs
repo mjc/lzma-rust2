@@ -26,12 +26,16 @@ impl Write for SharedSink {
 }
 
 #[test]
-fn empty_input_finishes_without_waiting_for_a_worker() {
+fn empty_input_requires_end_marker() {
     let mut reader = Lzma2ReaderMt::new(Cursor::new(Vec::new()), 4096, None, 2);
     let mut output = [0; 1];
+    assert_eq!(
+        reader.read(&mut output).unwrap_err().kind(),
+        std::io::ErrorKind::UnexpectedEof
+    );
+
+    let mut reader = Lzma2ReaderMt::new(Cursor::new([0]), 4096, None, 2);
     assert_eq!(reader.read(&mut output).unwrap(), 0);
-    assert_eq!(reader.read(&mut output).unwrap(), 0);
-    assert_eq!(reader.chunk_count(), 0);
 }
 
 #[test]

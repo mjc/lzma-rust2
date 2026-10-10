@@ -461,11 +461,17 @@ impl BlockHeader {
         }
 
         let header_size = (header_size_encoded as usize + 1) * 4;
-        if header_size > block_data.len() {
+        if !(8..=1024).contains(&header_size) || header_size > block_data.len() {
             return Err(error_invalid_data("Block data too short for header"));
         }
 
         let header_data = &block_data[1..header_size];
+        let crc_offset = header_size - 4;
+        let expected_crc =
+            u32::from_le_bytes(block_data[crc_offset..header_size].try_into().unwrap());
+        if Crc32::checksum(&block_data[..crc_offset]) != expected_crc {
+            return Err(error_invalid_data("XZ block header CRC32 mismatch"));
+        }
         let block_flags = header_data[0];
         // Bits 2-5 are reserved. A set bit means the header has an unknown
         // field. It should not be parsed.

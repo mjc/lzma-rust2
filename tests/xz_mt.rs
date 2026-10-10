@@ -167,16 +167,109 @@ fn concatenated_streams_with_different_checks() {
     let second = b"second stream";
     let mut compressed = encode(first, CheckType::Crc32);
     compressed.extend_from_slice(&[0; 4]);
+    let second_start = compressed.len() as u64;
     compressed.extend_from_slice(&encode(second, CheckType::Sha256));
 
     assert!(XzReaderMt::new(Cursor::new(&compressed), false, 2).is_err());
 
     let mut decoded = Vec::new();
-    XzReaderMt::new(Cursor::new(compressed), true, 2)
+    XzReaderMt::new(Cursor::new(&compressed), true, 2)
         .unwrap()
         .read_to_end(&mut decoded)
         .unwrap();
     assert_eq!(decoded, [first.as_slice(), second.as_slice()].concat());
+
+    for allow_multiple_streams in [false, true] {
+        let mut cursor = Cursor::new(&compressed);
+        cursor.set_position(second_start);
+        decoded.clear();
+        XzReaderMt::new(cursor, allow_multiple_streams, 2)
+            .unwrap()
+            .read_to_end(&mut decoded)
+            .unwrap();
+        assert_eq!(decoded, second);
+    }
+}
+
+#[test]
+fn trailing_padding_must_be_a_multiple_of_four() {
+    let mut writer = XzWriter::new(Vec::new(), XzOptions::with_preset(1)).unwrap();
+    writer.write_all(b"payload").unwrap();
+    let mut compressed = writer.finish().unwrap();
+    compressed.push(0);
+
+    let mut output = Vec::new();
+    assert_eq!(
+        XzReader::new(compressed.as_slice(), true)
+            .read_to_end(&mut output)
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
+    assert_eq!(
+        XzReaderMt::new(Cursor::new(&compressed), true, 2)
+            .err()
+            .unwrap()
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
+fn corrupt_block_header_crc_is_rejected_by_both_readers() {
+    let mut writer = XzWriter::new(Vec::new(), XzOptions::with_preset(1)).unwrap();
+    writer.write_all(b"payload").unwrap();
+    let mut compressed = writer.finish().unwrap();
+    let block_start = 12;
+    let header_size = (usize::from(compressed[block_start]) + 1) * 4;
+    compressed[block_start + header_size - 1] ^= 1;
+
+    let mut output = Vec::new();
+    assert_eq!(
+        XzReader::new(compressed.as_slice(), false)
+            .read_to_end(&mut output)
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
+    assert_eq!(
+        XzReaderMt::new(Cursor::new(&compressed), false, 2)
+            .unwrap()
+            .read_to_end(&mut Vec::new())
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
+fn bounded_parallel_decode_handles_large_uncompressed_block() {
+    let mut state = 0x1234_5678u32;
+    let input: Vec<u8> = (0..1 << 20)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as u8
+        })
+        .collect();
+    let mut options = liblzma::stream::LzmaOptions::new_preset(1).unwrap();
+    options.dict_size(4096);
+    let mut filters = liblzma::stream::Filters::new();
+    filters.lzma2(&options);
+    let stream =
+        liblzma::stream::Stream::new_stream_encoder(&filters, liblzma::stream::Check::None)
+            .unwrap();
+    let mut writer = liblzma::write::XzEncoder::new_stream(Vec::new(), stream);
+    writer.write_all(&input).unwrap();
+    let compressed = writer.finish().unwrap();
+
+    let mut decoded = Vec::new();
+    XzReaderMt::new_mem_limit(Cursor::new(&compressed), false, 2200, 1)
+        .unwrap()
+        .read_to_end(&mut decoded)
+        .unwrap();
+    assert_eq!(decoded, input);
 }
 
 #[test]
@@ -194,6 +287,13 @@ fn prefilters_are_applied_before_parallel_block_encoding() {
 
     let mut decoded = Vec::new();
     XzReader::new(compressed.as_slice(), false)
+        .read_to_end(&mut decoded)
+        .unwrap();
+    assert_eq!(decoded, input);
+
+    decoded.clear();
+    XzReaderMt::new(Cursor::new(compressed.as_slice()), false, 2)
+        .unwrap()
         .read_to_end(&mut decoded)
         .unwrap();
     assert_eq!(decoded, input);

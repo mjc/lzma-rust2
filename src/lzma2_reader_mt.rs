@@ -143,8 +143,10 @@ impl<R: Read> Lzma2ReaderMt<R> {
         match self.inner.read_exact(&mut control_buf) {
             Ok(_) => (),
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
-                // Clean end of stream.
-                return Ok(false);
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "missing LZMA2 end marker",
+                ));
             }
             Err(error) => return Err(error),
         }

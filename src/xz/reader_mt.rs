@@ -35,7 +35,7 @@ struct XzBlock {
 /// A work unit for a worker thread.
 /// Contains the sequence number, the block data and the uncompressed size the index
 /// records for the block.
-type WorkUnit = (u64, Vec<u8>, u64, u64, CheckType);
+type WorkUnit = (u64, Vec<u8>, u64, u64, CheckType, bool);
 
 /// A result unit from a worker thread.
 /// Contains the sequence number and the decompressed data.
@@ -132,14 +132,15 @@ impl<R: Read + Seek> XzReaderMt<R> {
     /// This reads the index at the end of the file to efficiently locate block boundaries.
     fn scan_blocks(&mut self) -> io::Result<()> {
         let mut reader = self.inner.take().expect("inner reader not set");
+        let start = reader.stream_position()?;
         let file_size = reader.seek(SeekFrom::End(0))?;
         let mut stream_end = file_size;
         let mut streams = Vec::new();
 
         loop {
-            stream_end = trim_stream_padding(&mut reader, stream_end)?;
+            stream_end = trim_stream_padding(&mut reader, stream_end, start)?;
             // Minimum XZ stream: 12-byte header, 8-byte index, and 12-byte footer.
-            if stream_end < 32 {
+            if stream_end.saturating_sub(start) < 32 {
                 return Err(error_invalid_data(
                     "File too small to contain a valid XZ stream",
                 ));
@@ -166,6 +167,11 @@ impl<R: Read + Seek> XzReaderMt<R> {
                 .checked_sub(block_bytes)
                 .and_then(|start| start.checked_sub(12))
                 .ok_or_else(|| error_invalid_data("XZ index starts before stream header"))?;
+            if stream_start < start {
+                return Err(error_invalid_data(
+                    "XZ stream starts before reader position",
+                ));
+            }
 
             reader.seek(SeekFrom::Start(stream_start))?;
             let stream_header = StreamHeader::parse(&mut reader)?;
@@ -195,7 +201,7 @@ impl<R: Read + Seek> XzReaderMt<R> {
             }
             streams.push(blocks);
 
-            if stream_start == 0 {
+            if stream_start == start {
                 break;
             }
             if !self.allow_multiple_streams {
@@ -316,6 +322,7 @@ impl<R: Read + Seek> XzReaderMt<R> {
             uncompressed_size,
             block.unpadded_size,
             block.check_type,
+            self.mem_limit_kb != u32::MAX,
         )) {
             // Queue is closed, this indicates shutdown.
             self.state = State::Error;
@@ -499,12 +506,12 @@ fn index_location(file_size: u64, backward_size: u32) -> io::Result<(u64, u64)> 
     Ok((index_start_pos, index_size))
 }
 
-fn trim_stream_padding<R: Read + Seek>(reader: &mut R, end: u64) -> io::Result<u64> {
+fn trim_stream_padding<R: Read + Seek>(reader: &mut R, end: u64, start: u64) -> io::Result<u64> {
     let mut stream_end = end;
     let mut buffer = [0u8; 4096];
 
-    while stream_end > 0 {
-        let chunk_size = usize::try_from(stream_end.min(buffer.len() as u64)).unwrap();
+    while stream_end > start {
+        let chunk_size = usize::try_from((stream_end - start).min(buffer.len() as u64)).unwrap();
         let chunk_start = stream_end - chunk_size as u64;
         reader.seek(SeekFrom::Start(chunk_start))?;
         reader.read_exact(&mut buffer[..chunk_size])?;
@@ -540,7 +547,7 @@ fn worker_thread_logic(
     active_workers: Arc<AtomicU32>,
 ) {
     while !shutdown_flag.load(Ordering::Acquire) {
-        let (seq, work_unit_data, uncompressed_size, unpadded_size, check_type) =
+        let (seq, work_unit_data, uncompressed_size, unpadded_size, check_type, reserve_output) =
             match worker_handle.steal() {
                 Some(work) => {
                     active_workers.fetch_add(1, Ordering::Release);
@@ -552,8 +559,13 @@ fn worker_thread_logic(
                 }
             };
 
-        let result =
-            decompress_xz_block(work_unit_data, check_type, uncompressed_size, unpadded_size);
+        let result = decompress_xz_block(
+            work_unit_data,
+            check_type,
+            uncompressed_size,
+            unpadded_size,
+            reserve_output,
+        );
 
         match result {
             Ok(decompressed_data) => {
@@ -583,6 +595,7 @@ fn decompress_xz_block(
     check_type: CheckType,
     uncompressed_size: u64,
     unpadded_size: u64,
+    reserve_output: bool,
 ) -> io::Result<Vec<u8>> {
     let (filters, properties, header_size) = BlockHeader::parse_from_slice(&block_data)?;
 
@@ -610,16 +623,29 @@ fn decompress_xz_block(
         ));
     }
 
-    let compressed_data = block_data[header_size..compressed_data_end].to_vec();
-    let mut compressed_data = compressed_data.as_slice();
+    let mut compressed_data = &block_data[header_size..compressed_data_end];
 
     let base_reader: Box<dyn Read> = Box::new(&mut compressed_data);
     let chain_reader = create_filter_chain(base_reader, &filters, &properties);
 
     let mut decompressed_data = Vec::new();
+    if reserve_output {
+        let capacity = uncompressed_size
+            .checked_add(1)
+            .and_then(|size| usize::try_from(size).ok())
+            .ok_or_else(|| error_out_of_memory("XZ block output too large"))?;
+        decompressed_data
+            .try_reserve_exact(capacity)
+            .map_err(|_| error_out_of_memory("XZ block output allocation too large"))?;
+    }
     chain_reader
         .take(uncompressed_size.saturating_add(1))
         .read_to_end(&mut decompressed_data)?;
+    if !compressed_data.is_empty() {
+        return Err(error_invalid_data(
+            "XZ block has data after the LZMA2 end marker",
+        ));
+    }
     if decompressed_data.len() as u64 != uncompressed_size {
         return Err(error_invalid_data(
             "XZ block decompresses to a size other than the index records",
@@ -680,8 +706,8 @@ mod tests {
     fn decompress_block_shorter_than_checksum_errs() {
         // Minimal valid 8-byte block header (single LZMA2 filter).
         let block = [1u8, 0, 0x21, 0x01, 0, 0, 0, 0];
-        assert!(decompress_xz_block(block.to_vec(), CheckType::Sha256, 0, 8).is_err());
-        assert!(decompress_xz_block(block.to_vec(), CheckType::Crc64, 0, 8).is_err());
+        assert!(decompress_xz_block(block.to_vec(), CheckType::Sha256, 0, 8, false).is_err());
+        assert!(decompress_xz_block(block.to_vec(), CheckType::Crc64, 0, 8, false).is_err());
     }
 
     /// The bytes of the one block in a single-block stream, and the data it holds.
@@ -721,12 +747,16 @@ mod tests {
             CheckType::Crc64,
             data.len() as u64,
             unpadded_size,
+            false,
         )
         .unwrap();
         assert!(decoded == data);
         // An index that understates the block: the decode stops a byte past the
         // stated size and reports the mismatch, rather than decoding it all.
-        assert!(decompress_xz_block(block.clone(), CheckType::Crc64, 1024, unpadded_size).is_err());
+        assert!(
+            decompress_xz_block(block.clone(), CheckType::Crc64, 1024, unpadded_size, false)
+                .is_err()
+        );
         // One that overstates it fails the same way.
         assert!(
             decompress_xz_block(
@@ -734,9 +764,31 @@ mod tests {
                 CheckType::Crc64,
                 data.len() as u64 + 1,
                 unpadded_size,
+                false,
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn decompress_block_rejects_bytes_after_lzma2_end_marker() {
+        let (block, data, unpadded_size) = one_block();
+        let data_end = unpadded_size as usize - 8;
+        let mut altered = block[..data_end].to_vec();
+        altered.push(0xA5);
+        let new_unpadded_size = unpadded_size + 1;
+        altered.resize(new_unpadded_size.next_multiple_of(4) as usize, 0);
+        altered.extend_from_slice(&block[block.len() - 8..]);
+
+        let error = decompress_xz_block(
+            altered,
+            CheckType::Crc64,
+            data.len() as u64,
+            new_unpadded_size,
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]
@@ -755,11 +807,19 @@ mod tests {
     #[test]
     fn indexed_block_span_must_fit_before_the_index() {
         let input = [
-            0x00, 0x00, 0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00, 0x00, 0x00, 0xFF, 0x12, 0xD9, 0x41,
-            0x00, 0x01, 0x80, 0x80, 0x80, 0x04, 0x00, 0x28, 0x18, 0x03, 0x04, 0xA8, 0x00, 0x0A,
-            0xFC, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x59, 0x5A,
+            0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00, 0x00, 0x00, 0xFF, 0x12, 0xD9, 0x41, 0x00, 0x01,
+            0x80, 0x80, 0x80, 0x80, 0x04, 0x00, 0x28, 0x18, 0x03, 0x04, 0xA8, 0x00, 0x0A, 0xFC,
+            0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x59, 0x5A,
         ];
-        assert!(XzReaderMt::new(Cursor::new(input), false, 1).is_err());
+        let error = XzReaderMt::new(Cursor::new(input), false, 1)
+            .err()
+            .expect("oversized block span must fail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            error
+                .to_string()
+                .contains("index starts before stream header")
+        );
     }
 
     #[test]
