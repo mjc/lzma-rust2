@@ -36,13 +36,28 @@ jobs:
             target: lzip_mt_decode
             decoder_seed: true
           - sanitizer: leak
+            target: lzma
+            decoder_seed: true
+          - sanitizer: leak
+            target: lzma_stream
+            decoder_seed: true
+          - sanitizer: leak
             target: lzma2
+            decoder_seed: true
+          - sanitizer: leak
+            target: lzma2_stream
             decoder_seed: true
           - sanitizer: leak
             target: xz
             decoder_seed: true
           - sanitizer: leak
+            target: xz_stream
+            decoder_seed: true
+          - sanitizer: leak
             target: lzip
+            decoder_seed: true
+          - sanitizer: leak
+            target: lzip_stream
             decoder_seed: true
           - sanitizer: leak
             target: lzma2_mt_roundtrip
@@ -63,13 +78,28 @@ jobs:
             target: lzip_mt_decode
             decoder_seed: true
           - sanitizer: memory
+            target: lzma
+            decoder_seed: true
+          - sanitizer: memory
+            target: lzma_stream
+            decoder_seed: true
+          - sanitizer: memory
             target: lzma2
+            decoder_seed: true
+          - sanitizer: memory
+            target: lzma2_stream
             decoder_seed: true
           - sanitizer: memory
             target: xz
             decoder_seed: true
           - sanitizer: memory
+            target: xz_stream
+            decoder_seed: true
+          - sanitizer: memory
             target: lzip
+            decoder_seed: true
+          - sanitizer: memory
+            target: lzip_stream
             decoder_seed: true
           - sanitizer: thread
             target: lzma2_mt_decode
