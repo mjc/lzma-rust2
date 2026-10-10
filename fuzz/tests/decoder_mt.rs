@@ -4,7 +4,10 @@ mod decoder_mt;
 #[path = "../valid_streams.rs"]
 mod valid_streams;
 
-use decoder_mt::{lzip_mt_decode, lzma2_mt_decode, xz_mt_decode, HEADER_SIZE, MAX_INPUT_SIZE};
+use decoder_mt::{
+    lzip_mt_decode, lzip_mt_decode_tolerant, lzma2_mt_decode, lzma2_mt_decode_tolerant,
+    xz_mt_decode, xz_mt_decode_tolerant, HEADER_SIZE, MAX_INPUT_SIZE,
+};
 use lzma_rust2::{
     CheckType, LzipReader, LzipReaderMt, Lzma2Reader, Lzma2ReaderMt, XzReader, XzReaderMt,
 };
@@ -80,16 +83,16 @@ fn malformed_and_truncated_streams_return_without_panicking() {
     ] {
         for length in [0, 1, 5, 12, stream.len() / 2, stream.len() - 1] {
             let candidate = input(length as u8, &stream[..length]);
-            lzma2_mt_decode(&candidate);
-            xz_mt_decode(&candidate);
-            lzip_mt_decode(&candidate);
+            lzma2_mt_decode_tolerant(&candidate);
+            xz_mt_decode_tolerant(&candidate);
+            lzip_mt_decode_tolerant(&candidate);
         }
         for offset in [0, stream.len() / 3, stream.len() / 2, stream.len() - 1] {
             stream[offset] ^= 0x80;
             let candidate = input(offset as u8, &stream);
-            lzma2_mt_decode(&candidate);
-            xz_mt_decode(&candidate);
-            lzip_mt_decode(&candidate);
+            lzma2_mt_decode_tolerant(&candidate);
+            xz_mt_decode_tolerant(&candidate);
+            lzip_mt_decode_tolerant(&candidate);
             stream[offset] ^= 0x80;
         }
     }
