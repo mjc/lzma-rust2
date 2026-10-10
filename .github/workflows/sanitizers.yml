@@ -95,6 +95,24 @@ jobs:
           --build-std
           -- -max_total_time=30 -max_len=65548 -timeout=10 -rss_limit_mb=512
 
+  tests:
+    name: address / library tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          target: x86_64-unknown-linux-gnu
+          components: rust-src
+      - name: Select nightly Cargo
+        run: echo "$(dirname "$(rustup which --toolchain nightly cargo)")" >> "$GITHUB_PATH"
+      - name: Run AddressSanitizer tests
+        env:
+          RUSTFLAGS: -Zsanitizer=address
+        run: cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --lib --all-features
+
   miri:
     name: Miri (single-threaded core)
     runs-on: ubuntu-24.04
