@@ -137,5 +137,11 @@ fn single_stream_mode_does_not_compare_different_consumption_contracts() {
 
 #[test]
 fn empty_lzma2_input_is_rejected_by_both_readers() {
-    assert!(lzma2_mt_decode(&[0, 0]).is_some());
+    let mut serial = Lzma2Reader::new(&[][..], 4 * 1024, None);
+    let serial_error = serial.read_to_end(&mut Vec::new()).unwrap_err();
+    assert_eq!(serial_error.kind(), std::io::ErrorKind::UnexpectedEof);
+
+    let mut parallel = Lzma2ReaderMt::new(Cursor::new(&[][..]), 4 * 1024, None, 2);
+    let parallel_error = parallel.read_to_end(&mut Vec::new()).unwrap_err();
+    assert_eq!(parallel_error.kind(), std::io::ErrorKind::UnexpectedEof);
 }
