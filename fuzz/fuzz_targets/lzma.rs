@@ -1,39 +1,21 @@
 #![no_main]
 
-use std::io;
+#[path = "reference_decode.rs"]
+mod reference_decode;
 
-use libfuzzer_sys::{arbitrary, fuzz_target};
-use lzma_rust2::{LzmaOptions, LzmaReader};
+use libfuzzer_sys::fuzz_target;
+use liblzma::stream::Stream;
+use lzma_rust2::LzmaReader;
 
-#[derive(Debug)]
-struct LzmaData(Vec<u8>);
+fuzz_target!(|data: &[u8]| {
+    const MEM_LIMIT_KB: u32 = 8 * 1024;
+    const REFERENCE_MEM_LIMIT: u64 = 16 * 1024 * 1024;
 
-impl<'a> arbitrary::Arbitrary<'a> for LzmaData {
-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> Result<Self, arbitrary::Error> {
-        let c1 = u8::arbitrary(u)?;
-        let c2 = u8::arbitrary(u)?;
-        let c3 = u8::arbitrary(u)?;
-        let c4 = u8::arbitrary(u)?;
-        let mut bytes = vec![0, c1, c2, c3, c4];
-
-        let vec: Vec<u8> = Vec::arbitrary(u)?;
-        bytes.extend(vec);
-        Ok(Self(bytes))
-    }
-
-    #[inline]
-    fn size_hint(depth: usize) -> (usize, Option<usize>) {
-        Vec::<u8>::size_hint(depth)
-    }
-}
-
-fuzz_target!(|data: LzmaData| {
-    let options = LzmaOptions::with_preset(6);
-    let uncomp_size = 1 << 20;
-    let props = options.get_props();
-    let dict_size = options.dict_size;
-
-    let r = data.0.as_slice();
-    let mut reader = LzmaReader::new_with_props(r, uncomp_size, props, dict_size, None).unwrap();
-    let _ = io::copy(&mut reader, &mut io::empty());
+    let implementation = LzmaReader::new_mem_limit(data, MEM_LIMIT_KB, None)
+        .and_then(reference_decode::read_bounded);
+    let reference = reference_decode::read_bounded(liblzma::read::XzDecoder::new_stream(
+        data,
+        Stream::new_lzma_decoder(REFERENCE_MEM_LIMIT).unwrap(),
+    ));
+    reference_decode::compare(implementation, reference);
 });

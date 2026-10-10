@@ -448,9 +448,7 @@ impl BlockHeader {
         }))
     }
 
-    pub fn parse_from_slice(
-        block_data: &[u8],
-    ) -> crate::Result<([Option<FilterType>; 4], [u32; 4], usize)> {
+    pub fn parse_from_slice(block_data: &[u8]) -> crate::Result<Self> {
         if block_data.is_empty() {
             return Err(error_invalid_data("Empty block data"));
         }
@@ -461,171 +459,12 @@ impl BlockHeader {
         }
 
         let header_size = (header_size_encoded as usize + 1) * 4;
-        if header_size > block_data.len() {
+        if !(8..=1024).contains(&header_size) || header_size > block_data.len() {
             return Err(error_invalid_data("Block data too short for header"));
         }
 
-        let header_data = &block_data[1..header_size];
-        let block_flags = header_data[0];
-        // Bits 2-5 are reserved. A set bit means the header has an unknown
-        // field. It should not be parsed.
-        if block_flags & 0x3C != 0 {
-            return Err(error_unsupported("reserved block flag bits are set"));
-        }
-        let num_filters = ((block_flags & 0x03) + 1) as usize;
-        let has_compressed_size = (block_flags & 0x40) != 0;
-        let has_uncompressed_size = (block_flags & 0x80) != 0;
-
-        let mut offset = 1;
-
-        // Skip optional compressed size.
-        if has_compressed_size {
-            if offset >= header_data.len() {
-                return Err(error_invalid_data(
-                    "Block header too short for compressed size",
-                ));
-            }
-            offset += count_multibyte_integer_size(&header_data[offset..]);
-        }
-
-        // Skip optional uncompressed size.
-        if has_uncompressed_size {
-            if offset >= header_data.len() {
-                return Err(error_invalid_data(
-                    "Block header too short for uncompressed size",
-                ));
-            }
-            offset += count_multibyte_integer_size(&header_data[offset..]);
-        }
-
-        let mut filters = [None; 4];
-        let mut properties = [0; 4];
-
-        // Parse filters.
-        for i in 0..num_filters {
-            if offset >= header_data.len() {
-                return Err(error_invalid_data("Block header too short for filters"));
-            }
-
-            let filter_id = parse_multibyte_integer(&header_data[offset..])?;
-            let filter_type = FilterType::try_from(filter_id)
-                .map_err(|_| error_invalid_data("Unsupported filter type"))?;
-
-            offset += count_multibyte_integer_size(&header_data[offset..]);
-
-            let property = match filter_type {
-                FilterType::Delta => {
-                    if offset >= header_data.len() {
-                        return Err(error_invalid_data(
-                            "Block header too short for Delta properties",
-                        ));
-                    }
-
-                    let props_size = parse_multibyte_integer(&header_data[offset..])?;
-                    offset += count_multibyte_integer_size(&header_data[offset..]);
-
-                    if props_size != 1 {
-                        return Err(error_invalid_data("Invalid Delta properties size"));
-                    }
-
-                    if offset >= header_data.len() {
-                        return Err(error_invalid_data(
-                            "Block header too short for Delta properties",
-                        ));
-                    }
-
-                    let distance_prop = header_data[offset];
-                    offset += 1;
-                    (distance_prop as u32) + 1
-                }
-                FilterType::BcjX86
-                | FilterType::BcjPpc
-                | FilterType::BcjIa64
-                | FilterType::BcjArm
-                | FilterType::BcjArmThumb
-                | FilterType::BcjSparc
-                | FilterType::BcjArm64
-                | FilterType::BcjRiscv => {
-                    if offset >= header_data.len() {
-                        return Err(error_invalid_data(
-                            "Block header too short for BCJ properties",
-                        ));
-                    }
-
-                    let props_size = parse_multibyte_integer(&header_data[offset..])?;
-                    offset += count_multibyte_integer_size(&header_data[offset..]);
-
-                    match props_size {
-                        0 => 0,
-                        4 => {
-                            if offset + 4 > header_data.len() {
-                                return Err(error_invalid_data(
-                                    "Block header too short for BCJ start offset",
-                                ));
-                            }
-
-                            let start_offset = u32::from_le_bytes([
-                                header_data[offset],
-                                header_data[offset + 1],
-                                header_data[offset + 2],
-                                header_data[offset + 3],
-                            ]);
-                            offset += 4;
-                            start_offset
-                        }
-                        _ => return Err(error_invalid_data("Invalid BCJ properties size")),
-                    }
-                }
-                FilterType::Lzma2 => {
-                    if offset >= header_data.len() {
-                        return Err(error_invalid_data(
-                            "Block header too short for LZMA2 properties",
-                        ));
-                    }
-
-                    let props_size = parse_multibyte_integer(&header_data[offset..])?;
-                    offset += count_multibyte_integer_size(&header_data[offset..]);
-
-                    if props_size != 1 {
-                        return Err(error_invalid_data("Invalid LZMA2 properties size"));
-                    }
-
-                    if offset >= header_data.len() {
-                        return Err(error_invalid_data(
-                            "Block header too short for LZMA2 properties",
-                        ));
-                    }
-
-                    let dict_size_prop = header_data[offset];
-                    offset += 1;
-
-                    if dict_size_prop > 40 {
-                        return Err(error_invalid_data("Invalid LZMA2 dictionary size"));
-                    }
-
-                    if dict_size_prop == 40 {
-                        0xFFFFFFFF
-                    } else {
-                        let base = 2 | ((dict_size_prop & 1) as u32);
-                        base << (dict_size_prop / 2 + 11)
-                    }
-                }
-            };
-
-            filters[i] = Some(filter_type);
-            properties[i] = property;
-        }
-
-        if filters.iter().filter_map(|x| *x).next_back() != Some(FilterType::Lzma2) {
-            return Err(error_invalid_data(
-                "XZ block's last filter must be a LZMA2 filter",
-            ));
-        }
-        if filters[..num_filters - 1].contains(&Some(FilterType::Lzma2)) {
-            return Err(error_invalid_data("LZMA2 must be the last XZ block filter"));
-        }
-
-        Ok((filters, properties, header_size))
+        let mut header = &block_data[..header_size];
+        Self::parse(&mut header)?.ok_or_else(|| error_invalid_data("Invalid block header size"))
     }
 }
 

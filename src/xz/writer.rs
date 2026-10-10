@@ -193,6 +193,39 @@ impl<W: Write> FilterWriter<W> {
     }
 }
 
+pub(super) fn encode_block_with_filters(
+    data: &[u8],
+    pre_filters: &[FilterConfig],
+    lzma_options: &LzmaOptions,
+) -> Result<Vec<u8>> {
+    let mut output = Vec::new();
+    if pre_filters.is_empty() {
+        let mut writer = Lzma2Writer::new(
+            &mut output,
+            Lzma2Options {
+                lzma_options: lzma_options.clone(),
+                ..Default::default()
+            },
+        );
+        writer.write_all(data)?;
+        writer.finish()?;
+    } else {
+        let mut filters = pre_filters.to_vec();
+        filters.push(FilterConfig {
+            filter_type: FilterType::Lzma2,
+            property: 0,
+        });
+        let mut writer = FilterWriter::create_filter_chain(
+            CountingWriter::new(&mut output),
+            &filters,
+            lzma_options,
+        )?;
+        writer.write_all(data)?;
+        writer.finish()?;
+    }
+    Ok(output)
+}
+
 /// Configuration options for XZ compression.
 #[derive(Default, Debug, Clone)]
 pub struct XzOptions {

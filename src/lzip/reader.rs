@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 use super::{HEADER_SIZE, LzipHeader, LzipTrailer, TRAILER_SIZE, read_some};
 use crate::{
     CountingReader, LzmaReader, Read, Result, StickyError, crc::Crc32, error_invalid_data,
+    error_out_of_memory, lzma_reader::get_memory_usage,
 };
 
 /// A single-threaded LZIP decompressor.
@@ -19,6 +20,7 @@ pub struct LzipReader<R> {
     trailer_buf: Vec<u8>,
     crc_digest: Option<Crc32>,
     data_size: u64,
+    mem_limit_kb: u32,
 }
 
 /// Input recovered from a member's LZMA reader must precede the next source read.
@@ -106,6 +108,14 @@ impl<R> LzipReader<R> {
 impl<R: Read> LzipReader<R> {
     /// Create a new LZIP reader.
     pub fn new(inner: R) -> Self {
+        Self::new_mem_limit(inner, u32::MAX)
+    }
+
+    /// Create a new LZIP reader with a decoder memory limit in KiB.
+    ///
+    /// `u32::MAX` disables the limit. The limit is checked before allocating
+    /// the LZMA dictionary and probability model for each member.
+    pub fn new_mem_limit(inner: R, mem_limit_kb: u32) -> Self {
         Self {
             inner: Some(MemberInput {
                 reader: inner,
@@ -120,6 +130,7 @@ impl<R: Read> LzipReader<R> {
             trailer_buf: Vec::with_capacity(TRAILER_SIZE),
             crc_digest: None,
             data_size: 0,
+            mem_limit_kb,
         }
     }
 
@@ -159,6 +170,12 @@ impl<R: Read> LzipReader<R> {
                 return Err(error);
             }
         };
+
+        if self.mem_limit_kb < get_memory_usage(header.dict_size, 3, 0)? {
+            reader.restore(header_bytes[..filled].to_vec());
+            self.inner = Some(reader);
+            return Err(error_out_of_memory("LZIP member exceeds memory limit"));
+        }
 
         let counting_reader = CountingReader::new(reader);
 

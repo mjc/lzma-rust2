@@ -1,6 +1,10 @@
 #![no_main]
 
+#[path = "reference_decode.rs"]
+mod reference_decode;
+
 use libfuzzer_sys::fuzz_target;
+use liblzma::stream::{Stream, CONCATENATED};
 use lzma_rust2::{Action, LzipStream, Status};
 
 /// How much input to hand over in one call. A member hands back up to 40 bytes
@@ -18,6 +22,7 @@ const MAX_STEPS: usize = 4096;
 /// hold any number of members, so the limit is what keeps a few input bytes from
 /// turning into minutes of allocating.
 const MEM_LIMIT_KB: u32 = 8 * 1024;
+const REFERENCE_MEM_LIMIT: u64 = 16 * 1024 * 1024;
 
 /// The first eight bytes say how to feed the decoder.
 const PLAN_LEN: usize = 8;
@@ -31,8 +36,8 @@ fuzz_target!(|data: &[u8]| {
     let mut decoder = LzipStream::new_mem_limit(MEM_LIMIT_KB);
 
     let mut output = [0u8; 4096];
+    let mut decoded = Vec::new();
     let mut in_pos = 0usize;
-    let mut total_out = 0usize;
 
     for step in 0..MAX_STEPS {
         // One plan byte per call: the low half picks the chunk size, the high
@@ -56,9 +61,14 @@ fuzz_target!(|data: &[u8]| {
         };
 
         in_pos += result.bytes_consumed;
-        total_out += result.bytes_produced;
+        decoded.extend_from_slice(&output[..result.bytes_produced]);
 
         if result.status == Status::StreamEnd {
+            let reference = reference_decode::read_bounded(liblzma::read::XzDecoder::new_stream(
+                stream,
+                Stream::new_lzip_decoder(REFERENCE_MEM_LIMIT, CONCATENATED).unwrap(),
+            ));
+            reference_decode::compare(Ok(Some(decoded)), reference);
             return;
         }
 
@@ -72,7 +82,7 @@ fuzz_target!(|data: &[u8]| {
             stream.len(),
         );
 
-        if total_out > MAX_OUTPUT {
+        if decoded.len() > MAX_OUTPUT {
             return;
         }
     }

@@ -5,6 +5,14 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -12,7 +20,9 @@ env:
 jobs:
   Fuzzing:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
+      fail-fast: false
       matrix:
         target:
           - bcj2_decode
@@ -25,13 +35,99 @@ jobs:
           - lzma2_stream
           - xz
           - xz_stream
+        include:
+          - target: lzma_roundtrip
+            seed: true
+          - target: lzma2_roundtrip
+            seed: true
+          - target: lzma2_mt_roundtrip
+            seed: true
+          - target: xz_roundtrip
+            seed: true
+          - target: xz_mt_roundtrip
+            seed: true
+          - target: lzip_roundtrip
+            seed: true
+          - target: lzip_mt_roundtrip
+            seed: true
+          - target: lzma_roundtrip
+            cargo_args: --no-default-features
+            seed: true
+          - target: lzma2_roundtrip
+            cargo_args: --no-default-features
+            seed: true
+          - target: lzma2_mt_roundtrip
+            cargo_args: --no-default-features
+            seed: true
+          - target: xz_roundtrip
+            cargo_args: --no-default-features
+            seed: true
+          - target: xz_mt_roundtrip
+            cargo_args: --no-default-features
+            seed: true
+          - target: lzip_roundtrip
+            cargo_args: --no-default-features
+            seed: true
+          - target: lzip_mt_roundtrip
+            cargo_args: --no-default-features
+            seed: true
+          - target: lzma2_mt_decode
+            decoder_seed: true
+          - target: xz_mt_decode
+            decoder_seed: true
+          - target: lzip_mt_decode
+            decoder_seed: true
+          - target: lzma2_mt_decode
+            cargo_args: --no-default-features
+            decoder_seed: true
+          - target: xz_mt_decode
+            cargo_args: --no-default-features
+            decoder_seed: true
+          - target: lzip_mt_decode
+            cargo_args: --no-default-features
+            decoder_seed: true
     steps:
       - uses: actions/checkout@v7
       - name: Install rust version
         uses: dtolnay/rust-toolchain@nightly
         with:
           target: x86_64-unknown-linux-gnu
+      - name: Select nightly Cargo
+        run: echo "$(dirname "$(rustup which --toolchain nightly cargo)")" >> "$GITHUB_PATH"
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Seed encoder round trips
+        if: matrix.seed
+        run: cargo run --manifest-path fuzz/Cargo.toml --example seed_encoders
+      - name: Check encoder harness
+        if: matrix.seed
+        run: cargo test --manifest-path fuzz/Cargo.toml --test encoder_roundtrip ${{matrix.cargo_args}}
+      - name: Seed decoder corpus
+        run: cargo run --manifest-path fuzz/Cargo.toml --example seed_decoders ${{matrix.cargo_args}}
+      - name: Check parallel decoder harness
+        if: matrix.decoder_seed
+        run: cargo test --manifest-path fuzz/Cargo.toml --test decoder_mt ${{matrix.cargo_args}}
       - name: Run fuzzing
-        run: cargo fuzz run ${{matrix.target}} -- -max_total_time=180
+        run: |
+          limits=()
+          runtime=180
+          case '${{matrix.target}}' in
+            bcj2_decode|bcj2_roundtrip)
+              limits=(-max_len=65539 -timeout=10 -rss_limit_mb=512)
+              ;;
+            lzma|lzma_stream|lzma2|lzma2_stream|xz|xz_stream|lzip|lzip_stream)
+              limits=(-max_len=65536 -timeout=10 -rss_limit_mb=512)
+              ;;
+            lzma_roundtrip|lzma2_roundtrip|lzma2_mt_roundtrip)
+              limits=(-max_len=65548 -timeout=10 -rss_limit_mb=512)
+              ;;
+            xz_roundtrip|xz_mt_roundtrip|lzip_roundtrip|lzip_mt_roundtrip)
+              limits=(-max_len=65548 -timeout=10 -rss_limit_mb=512)
+              runtime=60
+              ;;
+            lzma2_mt_decode|xz_mt_decode|lzip_mt_decode)
+              limits=(-max_len=65538 -timeout=10 -rss_limit_mb=512)
+              runtime=60
+              ;;
+          esac
+          cargo fuzz run ${{matrix.target}} ${{matrix.cargo_args}} --sanitizer address -- -max_total_time="$runtime" "${limits[@]}"
