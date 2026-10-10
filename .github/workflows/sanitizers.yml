@@ -68,6 +68,12 @@ jobs:
           - sanitizer: leak
             target: lzip_mt_roundtrip
             encoder_seed: true
+          - sanitizer: leak
+            target: bcj2_decode
+            decoder_seed: true
+          - sanitizer: leak
+            target: bcj2_roundtrip
+            encoder_seed: true
           - sanitizer: memory
             target: lzma2_mt_decode
             decoder_seed: true
@@ -103,6 +109,12 @@ jobs:
             decoder_seed: true
           - sanitizer: memory
             target: lzma2_window_roundtrip
+            encoder_seed: true
+          - sanitizer: memory
+            target: bcj2_decode
+            decoder_seed: true
+          - sanitizer: memory
+            target: bcj2_roundtrip
             encoder_seed: true
           - sanitizer: thread
             target: lzma2_mt_decode
