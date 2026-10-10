@@ -2,9 +2,9 @@ use std::{
     collections::BTreeMap,
     io::{self, Cursor, Seek, SeekFrom},
     sync::{
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{self, Receiver, SyncSender},
-        Arc, Mutex,
     },
     thread,
     time::Duration,
@@ -14,15 +14,14 @@ use std::{
 const ERROR_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 
 use super::{
-    create_filter_chain, BlockHeader, CheckType, ChecksumCalculator, Index, StreamFooter,
-    StreamHeader,
+    BlockHeader, CheckType, ChecksumCalculator, Index, StreamFooter, StreamHeader,
+    create_filter_chain,
 };
 use crate::{
-    error_invalid_data, error_out_of_memory,
+    ByteReader, Read, error_invalid_data, error_out_of_memory,
     lzma2_reader::get_memory_usage,
     set_error,
     work_queue::{WorkStealingQueue, WorkerHandle},
-    ByteReader, Read,
 };
 
 #[derive(Debug, Clone)]
@@ -729,13 +728,15 @@ mod tests {
         // stated size and reports the mismatch, rather than decoding it all.
         assert!(decompress_xz_block(block.clone(), CheckType::Crc64, 1024, unpadded_size).is_err());
         // One that overstates it fails the same way.
-        assert!(decompress_xz_block(
-            block,
-            CheckType::Crc64,
-            data.len() as u64 + 1,
-            unpadded_size,
-        )
-        .is_err());
+        assert!(
+            decompress_xz_block(
+                block,
+                CheckType::Crc64,
+                data.len() as u64 + 1,
+                unpadded_size,
+            )
+            .is_err()
+        );
     }
 
     #[test]
