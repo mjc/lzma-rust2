@@ -61,6 +61,21 @@ jobs:
           - target: lzip_mt_roundtrip
             cargo_args: --no-default-features
             seed: true
+          - target: lzma2_mt_decode
+            decoder_seed: true
+          - target: xz_mt_decode
+            decoder_seed: true
+          - target: lzip_mt_decode
+            decoder_seed: true
+          - target: lzma2_mt_decode
+            cargo_args: --no-default-features
+            decoder_seed: true
+          - target: xz_mt_decode
+            cargo_args: --no-default-features
+            decoder_seed: true
+          - target: lzip_mt_decode
+            cargo_args: --no-default-features
+            decoder_seed: true
     steps:
       - uses: actions/checkout@v7
       - name: Install rust version
@@ -75,6 +90,12 @@ jobs:
       - name: Check encoder harness
         if: matrix.seed
         run: cargo test --manifest-path fuzz/Cargo.toml --test encoder_roundtrip ${{matrix.cargo_args}}
+      - name: Seed parallel decoders
+        if: matrix.decoder_seed
+        run: cargo run --manifest-path fuzz/Cargo.toml --example seed_decoders ${{matrix.cargo_args}}
+      - name: Check parallel decoder harness
+        if: matrix.decoder_seed
+        run: cargo test --manifest-path fuzz/Cargo.toml --test decoder_mt ${{matrix.cargo_args}}
       - name: Run fuzzing
         run: |
           limits=()
@@ -85,6 +106,10 @@ jobs:
               ;;
             xz_roundtrip|xz_mt_roundtrip|lzip_roundtrip|lzip_mt_roundtrip)
               limits=(-max_len=65548 -timeout=10 -rss_limit_mb=512)
+              runtime=60
+              ;;
+            lzma2_mt_decode|xz_mt_decode|lzip_mt_decode)
+              limits=(-max_len=65538 -timeout=10 -rss_limit_mb=512)
               runtime=60
               ;;
           esac

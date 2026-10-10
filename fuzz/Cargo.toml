@@ -59,6 +59,24 @@ test = false
 doc = false
 
 [[bin]]
+name = "lzma2_mt_decode"
+path = "fuzz_targets/lzma2_mt_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "xz_mt_decode"
+path = "fuzz_targets/xz_mt_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "lzip_mt_decode"
+path = "fuzz_targets/lzip_mt_decode.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "lzip"
 path = "fuzz_targets/lzip.rs"
 test = false

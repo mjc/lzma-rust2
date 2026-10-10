@@ -26,6 +26,15 @@ impl Write for SharedSink {
 }
 
 #[test]
+fn empty_input_finishes_without_waiting_for_a_worker() {
+    let mut reader = Lzma2ReaderMt::new(Cursor::new(Vec::new()), 4096, None, 2);
+    let mut output = [0; 1];
+    assert_eq!(reader.read(&mut output).unwrap(), 0);
+    assert_eq!(reader.read(&mut output).unwrap(), 0);
+    assert_eq!(reader.chunk_count(), 0);
+}
+
+#[test]
 fn flush_writes_out_every_chunk() {
     let data = std::fs::read(PG100).unwrap();
     let chunk_size = 128 * 1024;

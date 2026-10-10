@@ -3,9 +3,9 @@ use std::{
     io,
     io::{Cursor, Read},
     sync::{
-        Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{self, Receiver, SyncSender},
+        Arc, Mutex,
     },
     thread,
     time::Duration,
@@ -15,8 +15,9 @@ use std::{
 const ERROR_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 
 use crate::{
-    Lzma2Reader, set_error,
+    set_error,
     work_queue::{WorkStealingQueue, WorkerHandle},
+    Lzma2Reader,
 };
 
 /// A work unit for a worker thread.
@@ -291,8 +292,13 @@ impl<R: Read> Lzma2ReaderMt<R> {
                                 // Send any remaining data as the final work unit.
                                 self.send_work_unit();
                                 self.last_sequence_id =
-                                    Some(self.next_sequence_to_dispatch.saturating_sub(1));
-                                self.state = State::Draining;
+                                    self.next_sequence_to_dispatch.checked_sub(1);
+                                self.work_queue.close();
+                                self.state = if self.last_sequence_id.is_some() {
+                                    State::Draining
+                                } else {
+                                    State::Finished
+                                };
                                 continue;
                             }
                             Err(error) => {
