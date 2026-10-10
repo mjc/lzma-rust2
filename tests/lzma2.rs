@@ -2,6 +2,29 @@ use std::io::{Read, Write};
 
 use lzma_rust2::{Lzma2Options, Lzma2Reader, Lzma2Writer};
 
+#[test]
+fn incompressible_input_with_small_dictionary_round_trips() {
+    let mut state = 0x1234_5678u32;
+    let input: Vec<u8> = (0..1 << 20)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as u8
+        })
+        .collect();
+    let mut options = Lzma2Options::with_preset(1);
+    options.lzma_options.dict_size = 4096;
+    let mut writer = Lzma2Writer::new(Vec::new(), options);
+    writer.write_all(&input).unwrap();
+    let compressed = writer.finish().unwrap();
+    let mut decoded = Vec::new();
+    Lzma2Reader::new(compressed.as_slice(), 4096, None)
+        .read_to_end(&mut decoded)
+        .unwrap();
+    assert_eq!(decoded, input);
+}
+
 static EXECUTABLE: &str = "tests/data/executable.exe";
 static PG100: &str = "tests/data/pg100.txt";
 static PG6800: &str = "tests/data/pg6800.txt";

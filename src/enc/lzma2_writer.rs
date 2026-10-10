@@ -228,6 +228,7 @@ impl<W: Write> Lzma2Writer<W> {
             lzma_options.mf,
             lzma_options.depth_limit,
             lzma_options.dict_size,
+            get_extra_size_before(lzma_options.dict_size),
             lzma_options.nice_len as usize,
         );
 
@@ -288,6 +289,7 @@ impl<W: Write> Lzma2Writer<W> {
             lzma_options.mf,
             lzma_options.depth_limit,
             lzma_options.dict_size,
+            get_extra_size_before(lzma_options.dict_size),
             lzma_options.nice_len as usize,
         );
 

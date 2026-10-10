@@ -33,6 +33,7 @@ impl<W: Write> LzmaWriter<W> {
             options.mf,
             options.depth_limit,
             options.dict_size,
+            0,
             options.nice_len as usize,
         );
         if let Some(preset_dict) = &options.preset_dict {

@@ -142,6 +142,7 @@ impl LzmaEncoder {
         mf: MfType,
         depth_limit: i32,
         dict_size: u32,
+        extra_size_before: u32,
         nice_len: usize,
     ) -> (Self, LzmaEncoderModes) {
         let fast_mode = mode == EncodeMode::Fast;
@@ -150,7 +151,7 @@ impl LzmaEncoder {
         } else {
             LzmaEncoderModes::Normal(NormalEncoderMode::new())
         };
-        let (extra_size_before, extra_size_after) = if fast_mode {
+        let (mode_extra_size_before, extra_size_after) = if fast_mode {
             (
                 FastEncoderMode::EXTRA_SIZE_BEFORE,
                 FastEncoderMode::EXTRA_SIZE_AFTER,
@@ -161,6 +162,7 @@ impl LzmaEncoder {
                 NormalEncoderMode::EXTRA_SIZE_AFTER,
             )
         };
+        let extra_size_before = extra_size_before.max(mode_extra_size_before);
         let lz = match mf {
             MfType::Hc4 => LzEncoder::new_hc4(
                 dict_size,

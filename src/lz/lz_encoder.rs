@@ -2,7 +2,7 @@ use alloc::{vec, vec::Vec};
 use core::ops::Deref;
 
 use super::{bt4::Bt4, extend_match, hc4::Hc4};
-use crate::Write;
+use crate::{Write, error_invalid_data};
 
 /// Align to a 64-byte cache line
 const MOVE_BLOCK_ALIGN: i32 = 64;
@@ -339,8 +339,17 @@ impl LzEncoderData {
         backward: i32,
         len: usize,
     ) -> crate::Result<()> {
-        let start = (self.read_pos + 1 - backward) as usize;
-        out.write_all(&self.buf[start..(start + len)])
+        let start = self
+            .read_pos
+            .checked_add(1)
+            .and_then(|pos| pos.checked_sub(backward))
+            .and_then(|pos| usize::try_from(pos).ok())
+            .ok_or_else(|| error_invalid_data("LZMA2 encoder input is outside the window"))?;
+        let bytes = start
+            .checked_add(len)
+            .and_then(|end| self.buf.get(start..end))
+            .ok_or_else(|| error_invalid_data("LZMA2 encoder input is outside the window"))?;
+        out.write_all(bytes)
     }
 
     #[inline(always)]
