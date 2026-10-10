@@ -5,10 +5,26 @@ mod decoder_mt;
 mod valid_streams;
 
 use decoder_mt::{lzip_mt_decode, lzma2_mt_decode, xz_mt_decode, HEADER_SIZE, MAX_INPUT_SIZE};
-use lzma_rust2::CheckType;
+use lzma_rust2::{
+    CheckType, LzipReader, LzipReaderMt, Lzma2Reader, Lzma2ReaderMt, XzReader, XzReaderMt,
+};
+use std::io::{Cursor, Read};
 
 fn input(selector: u8, stream: &[u8]) -> Vec<u8> {
-    [[selector, selector.rotate_left(3)].as_slice(), stream].concat()
+    [[selector, selector % 4].as_slice(), stream].concat()
+}
+
+fn read_with_size(mut reader: impl Read, read_size: usize) -> Vec<u8> {
+    let mut output = Vec::new();
+    let mut buffer = [0; 4096];
+    loop {
+        let count = reader.read(&mut buffer[..read_size]).unwrap();
+        if count == 0 {
+            break;
+        }
+        output.extend_from_slice(&buffer[..count]);
+    }
+    output
 }
 
 #[test]
@@ -18,8 +34,24 @@ fn parallel_readers_decode_valid_multiblock_streams() {
     let lzip = valid_streams::lzip(&payload);
 
     for selector in 0..8 {
-        assert!(lzma2_mt_decode(&input(selector, &lzma2)).is_some());
-        assert!(lzip_mt_decode(&input(selector, &lzip)).is_some());
+        let read_size = [1, 7, 64, 4096][selector as usize % 4];
+        let lzma2_serial =
+            read_with_size(Lzma2Reader::new(lzma2.as_slice(), 4 * 1024, None), read_size);
+        let lzma2_parallel = read_with_size(
+            Lzma2ReaderMt::new(Cursor::new(lzma2.as_slice()), 4 * 1024, None, 2),
+            read_size,
+        );
+        assert_eq!(lzma2_serial, payload);
+        assert_eq!(lzma2_parallel, payload);
+
+        let lzip_serial =
+            read_with_size(LzipReader::new_mem_limit(lzip.as_slice(), 16 * 1024), read_size);
+        let lzip_parallel = read_with_size(
+            LzipReaderMt::new_mem_limit(Cursor::new(lzip.as_slice()), 16 * 1024, 2).unwrap(),
+            read_size,
+        );
+        assert_eq!(lzip_serial, payload);
+        assert_eq!(lzip_parallel, payload);
         for check_type in [
             CheckType::None,
             CheckType::Crc32,
@@ -27,7 +59,13 @@ fn parallel_readers_decode_valid_multiblock_streams() {
             CheckType::Sha256,
         ] {
             let xz = valid_streams::xz(&payload, check_type);
-            assert!(xz_mt_decode(&input(selector, &xz)).is_some());
+            let xz_serial = read_with_size(XzReader::new(xz.as_slice(), false), read_size);
+            let xz_parallel = read_with_size(
+                XzReaderMt::new(Cursor::new(xz.as_slice()), false, 2).unwrap(),
+                read_size,
+            );
+            assert_eq!(xz_serial, payload);
+            assert_eq!(xz_parallel, payload);
         }
     }
 }

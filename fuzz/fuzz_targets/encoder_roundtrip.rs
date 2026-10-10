@@ -3,7 +3,7 @@ use std::{
     num::NonZeroU64,
 };
 
-use liblzma::stream::{Filters, Stream};
+use liblzma::stream::{CONCATENATED, Filters, Stream};
 use lzma_rust2::{
     filter::FilterType, CheckType, EncodeMode, LzipOptions, LzipReader, LzipReaderMt, LzipWriter,
     LzipWriterMt, Lzma2Options, Lzma2Reader, Lzma2Writer, Lzma2WriterMt, LzmaOptions, LzmaReader,
@@ -358,8 +358,14 @@ pub fn xz_mt_roundtrip(data: &[u8]) -> Option<()> {
 
 fn check_lzip(compressed: &[u8], payload: &[u8], data: &[u8]) {
     check_output(LzipReader::new(input(compressed, data)), payload, data);
-    let reader = LzipReaderMt::new_mem_limit(Cursor::new(compressed), 16 * 1024 * 1024, 2).unwrap();
+    let reader = LzipReaderMt::new_mem_limit(Cursor::new(compressed), 16 * 1024, 2).unwrap();
     check_output(reader, payload, data);
+    let stream = Stream::new_lzip_decoder(16 * 1024 * 1024, CONCATENATED).unwrap();
+    check_output(
+        liblzma::read::XzDecoder::new_stream(compressed, stream),
+        payload,
+        data,
+    );
 }
 
 #[allow(dead_code)]
