@@ -74,7 +74,7 @@ pub fn roundtrip(data: &[u8]) -> Option<()> {
             }
             writer.finish().unwrap().bytes
         } else {
-            options.chunk_size = NonZeroU64::new(len as u64);
+            options.chunk_size = NonZeroU64::new((len / 2).max(dict_size as usize) as u64);
             let mut writer = Lzma2WriterMt::new(output, options, 2).unwrap();
             for chunk in payload.chunks(chunk_size) {
                 writer.write_all(chunk).unwrap();
@@ -105,7 +105,7 @@ pub fn roundtrip(data: &[u8]) -> Option<()> {
             }
             writer.finish().unwrap().bytes
         } else {
-            xz_options.block_size = NonZeroU64::new(len as u64);
+            xz_options.block_size = NonZeroU64::new((len / 2).max(dict_size as usize) as u64);
             let mut writer = XzWriterMt::new(output, xz_options, 2).unwrap();
             for chunk in payload.chunks(chunk_size) {
                 writer.write_all(chunk).unwrap();
