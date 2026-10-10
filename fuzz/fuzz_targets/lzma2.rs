@@ -7,7 +7,7 @@ use lzma_rust2::{Lzma2Reader, LzmaOptions};
 
 fuzz_target!(|data: &[u8]| {
     const MAX_OUTPUT: u64 = 1 << 18;
-    const MEM_LIMIT_KB: u32 = 8 * 1024;
+    const MEM_LIMIT_KB: u32 = 16 * 1024;
 
     let Ok(reader) =
         Lzma2Reader::new_mem_limit(data, LzmaOptions::DICT_SIZE_DEFAULT, MEM_LIMIT_KB, None)

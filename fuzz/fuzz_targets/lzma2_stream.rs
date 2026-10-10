@@ -5,7 +5,7 @@ use lzma_rust2::{Action, Lzma2Stream, LzmaOptions, Status};
 
 const MAX_OUTPUT: usize = 1 << 18;
 const MAX_STEPS: usize = 4096;
-const MEM_LIMIT_KB: u32 = 8 * 1024;
+const MEM_LIMIT_KB: u32 = 16 * 1024;
 
 fuzz_target!(|data: &[u8]| {
     let mut decoder = Lzma2Stream::new_mem_limit(LzmaOptions::DICT_SIZE_DEFAULT, MEM_LIMIT_KB);
