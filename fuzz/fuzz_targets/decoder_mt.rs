@@ -35,14 +35,36 @@ fn read_bounded(mut reader: impl Read, selector: u8) -> io::Result<Option<Vec<u8
     }
 }
 
-fn compare_successes(serial: io::Result<Option<Vec<u8>>>, parallel: io::Result<Option<Vec<u8>>>) {
-    if let (Ok(Some(serial)), Ok(Some(parallel))) = (serial, parallel) {
-        assert_eq!(parallel, serial);
+fn compare_successes(
+    serial: io::Result<Option<Vec<u8>>>,
+    parallel: io::Result<Option<Vec<u8>>>,
+    strict: bool,
+) {
+    match (serial, parallel) {
+        (Ok(Some(serial)), Ok(Some(parallel))) => assert_eq!(parallel, serial),
+        (Ok(None), Ok(None)) | (Err(_), Err(_)) => {}
+        (Err(error), Ok(None)) | (Ok(None), Err(error))
+            if error.kind() == io::ErrorKind::OutOfMemory => {}
+        (Ok(Some(_)), Err(error)) | (Err(error), Ok(Some(_)))
+            if error.kind() == io::ErrorKind::OutOfMemory => {}
+        (serial, parallel) if strict => {
+            panic!("decoder acceptance differs: {serial:?} vs {parallel:?}")
+        }
+        _ => {}
     }
 }
 
 #[allow(dead_code)]
 pub fn lzma2_mt_decode(data: &[u8]) -> Option<()> {
+    lzma2_mt_decode_with_mode(data, true)
+}
+
+#[allow(dead_code)]
+pub fn lzma2_mt_decode_tolerant(data: &[u8]) -> Option<()> {
+    lzma2_mt_decode_with_mode(data, false)
+}
+
+fn lzma2_mt_decode_with_mode(data: &[u8], strict: bool) -> Option<()> {
     let (header, stream) = split_input(data)?;
     let dict_size = [4 * 1024, 8 * 1024, 16 * 1024, 64 * 1024][usize::from(header[0] >> 1) % 4];
     let workers = WORKERS[usize::from(header[0]) % WORKERS.len()];
@@ -53,12 +75,21 @@ pub fn lzma2_mt_decode(data: &[u8]) -> Option<()> {
         Lzma2ReaderMt::new(Cursor::new(stream), dict_size, None, workers),
         header[1],
     );
-    compare_successes(serial, parallel);
+    compare_successes(serial, parallel, strict);
     Some(())
 }
 
 #[allow(dead_code)]
 pub fn xz_mt_decode(data: &[u8]) -> Option<()> {
+    xz_mt_decode_with_mode(data, true)
+}
+
+#[allow(dead_code)]
+pub fn xz_mt_decode_tolerant(data: &[u8]) -> Option<()> {
+    xz_mt_decode_with_mode(data, false)
+}
+
+fn xz_mt_decode_with_mode(data: &[u8], strict: bool) -> Option<()> {
     let (header, stream) = split_input(data)?;
     let workers = WORKERS[usize::from(header[0]) % WORKERS.len()];
     let allow_multiple_streams = header[0] & 2 != 0;
@@ -74,23 +105,30 @@ pub fn xz_mt_decode(data: &[u8]) -> Option<()> {
         workers,
     )
     .and_then(|reader| read_bounded(reader, header[1]));
-    compare_successes(serial, parallel);
+    compare_successes(serial, parallel, strict);
     Some(())
 }
 
 #[allow(dead_code)]
 pub fn lzip_mt_decode(data: &[u8]) -> Option<()> {
+    lzip_mt_decode_with_mode(data, true)
+}
+
+#[allow(dead_code)]
+pub fn lzip_mt_decode_tolerant(data: &[u8]) -> Option<()> {
+    lzip_mt_decode_with_mode(data, false)
+}
+
+fn lzip_mt_decode_with_mode(data: &[u8], strict: bool) -> Option<()> {
     let (header, stream) = split_input(data)?;
     let workers = WORKERS[usize::from(header[0]) % WORKERS.len()];
 
     let parallel = LzipReaderMt::new_mem_limit(Cursor::new(stream), MEM_LIMIT_KB, workers)
         .and_then(|reader| read_bounded(reader, header[1]));
-    if let Ok(Some(parallel)) = parallel {
-        let serial = read_bounded(
-            LzipReader::new_mem_limit(Cursor::new(stream), MEM_LIMIT_KB),
-            header[1],
-        );
-        compare_successes(serial, Ok(Some(parallel)));
-    }
+    let serial = read_bounded(
+        LzipReader::new_mem_limit(Cursor::new(stream), MEM_LIMIT_KB),
+        header[1],
+    );
+    compare_successes(serial, parallel, strict);
     Some(())
 }
