@@ -40,6 +40,7 @@ pub fn lzma(payload: &[u8]) -> Vec<u8> {
     writer.finish().unwrap()
 }
 
+#[allow(dead_code)]
 pub fn lzma_raw(payload: &[u8], use_end_marker: bool) -> (Vec<u8>, u8, u32) {
     let options = lzma2_options().lzma_options;
     let mut writer = LzmaWriter::new_no_header(Vec::new(), &options, use_end_marker).unwrap();

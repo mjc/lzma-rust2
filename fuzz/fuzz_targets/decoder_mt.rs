@@ -42,9 +42,7 @@ fn compare_successes(
 ) {
     match (serial, parallel) {
         (Ok(Some(serial)), Ok(Some(parallel))) => assert_eq!(parallel, serial),
-        (Ok(None), Ok(None)) | (Err(_), Err(_)) => {}
-        (Err(error), Ok(None)) | (Ok(None), Err(error))
-            if error.kind() == io::ErrorKind::OutOfMemory => {}
+        (Ok(None), _) | (_, Ok(None)) | (Err(_), Err(_)) => {}
         (Ok(Some(_)), Err(error)) | (Err(error), Ok(Some(_)))
             if error.kind() == io::ErrorKind::OutOfMemory => {}
         (serial, parallel) if strict => {
@@ -105,7 +103,7 @@ fn xz_mt_decode_with_mode(data: &[u8], strict: bool) -> Option<()> {
         workers,
     )
     .and_then(|reader| read_bounded(reader, header[1]));
-    compare_successes(serial, parallel, strict);
+    compare_successes(serial, parallel, strict && allow_multiple_streams);
     Some(())
 }
 

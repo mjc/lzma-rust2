@@ -11,7 +11,7 @@ use decoder_mt::{
 use lzma_rust2::{
     CheckType, LzipReader, LzipReaderMt, Lzma2Reader, Lzma2ReaderMt, XzReader, XzReaderMt,
 };
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 
 fn input(selector: u8, stream: &[u8]) -> Vec<u8> {
     [[selector, selector % 4].as_slice(), stream].concat()
@@ -108,4 +108,34 @@ fn input_bounds_are_enforced() {
     assert!(lzma2_mt_decode(&oversized).is_none());
     assert!(xz_mt_decode(&oversized).is_none());
     assert!(lzip_mt_decode(&oversized).is_none());
+}
+
+#[test]
+fn output_cap_does_not_compare_incomplete_xz_decodes() {
+    let mut options = lzma_rust2::XzOptions::with_preset(1);
+    options.check_type = CheckType::Crc32;
+    let mut writer = lzma_rust2::XzWriter::new(Vec::new(), options).unwrap();
+    writer.write_all(&vec![0; 300_000]).unwrap();
+    let mut compressed = writer.finish().unwrap();
+    let footer = &compressed[compressed.len() - 12..];
+    let index_size = (u32::from_le_bytes(footer[4..8].try_into().unwrap()) as usize + 1) * 4;
+    let index_start = compressed.len() - 12 - index_size;
+    compressed[index_start - 1] ^= 1;
+
+    let mut serial = XzReader::new(compressed.as_slice(), true);
+    assert!(serial.read_to_end(&mut Vec::new()).is_err());
+    assert!(xz_mt_decode(&[[3, 2].as_slice(), compressed.as_slice()].concat()).is_some());
+}
+
+#[test]
+fn single_stream_mode_does_not_compare_different_consumption_contracts() {
+    let first = valid_streams::xz(b"first", CheckType::Crc32);
+    let second = valid_streams::xz(b"second", CheckType::Crc32);
+    let concatenated = [first, second].concat();
+    assert!(xz_mt_decode(&[[1, 2].as_slice(), concatenated.as_slice()].concat()).is_some());
+}
+
+#[test]
+fn empty_lzma2_input_is_rejected_by_both_readers() {
+    assert!(lzma2_mt_decode(&[0, 0]).is_some());
 }
