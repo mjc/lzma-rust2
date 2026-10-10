@@ -1,6 +1,6 @@
 use std::io::{self, Cursor, Read};
 
-use lzma_rust2::{LzipReaderMt, Lzma2Reader, Lzma2ReaderMt, XzReader, XzReaderMt};
+use lzma_rust2::{LzipReader, LzipReaderMt, Lzma2Reader, Lzma2ReaderMt, XzReader, XzReaderMt};
 
 pub const HEADER_SIZE: usize = 2;
 pub const MAX_INPUT_SIZE: usize = 64 * 1024;
@@ -78,7 +78,11 @@ pub fn lzip_mt_decode(data: &[u8]) -> Option<()> {
     let (header, stream) = split_input(data)?;
     let workers = WORKERS[usize::from(header[0]) % WORKERS.len()];
 
-    let _ = LzipReaderMt::new_mem_limit(Cursor::new(stream), MEM_LIMIT_KB, workers)
+    let parallel = LzipReaderMt::new_mem_limit(Cursor::new(stream), MEM_LIMIT_KB, workers)
         .and_then(|reader| read_bounded(reader, header[1]));
+    if let Ok(Some(parallel)) = parallel {
+        let serial = read_bounded(LzipReader::new(Cursor::new(stream)), header[1]);
+        compare_successes(serial, Ok(Some(parallel)));
+    }
     Some(())
 }
