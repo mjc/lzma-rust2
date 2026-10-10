@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use lzma_rust2::{XzOptions, XzReader, XzReaderMt, XzWriterMt};
+use lzma_rust2::{CheckType, XzOptions, XzReader, XzReaderMt, XzWriter, XzWriterMt};
 
 static EXECUTABLE: &str = "tests/data/executable.exe";
 static PG100: &str = "tests/data/pg100.txt";
@@ -151,6 +151,32 @@ fn empty_input_is_valid_empty_stream() {
         decoder.read_to_end(&mut liblzma_uncompressed).unwrap();
     }
     assert!(liblzma_uncompressed.is_empty());
+}
+
+#[test]
+fn concatenated_streams_with_different_checks() {
+    fn encode(data: &[u8], check_type: CheckType) -> Vec<u8> {
+        let mut options = XzOptions::with_preset(1);
+        options.check_type = check_type;
+        let mut writer = XzWriter::new(Vec::new(), options).unwrap();
+        writer.write_all(data).unwrap();
+        writer.finish().unwrap()
+    }
+
+    let first = b"first stream";
+    let second = b"second stream";
+    let mut compressed = encode(first, CheckType::Crc32);
+    compressed.extend_from_slice(&[0; 4]);
+    compressed.extend_from_slice(&encode(second, CheckType::Sha256));
+
+    assert!(XzReaderMt::new(Cursor::new(&compressed), false, 2).is_err());
+
+    let mut decoded = Vec::new();
+    XzReaderMt::new(Cursor::new(compressed), true, 2)
+        .unwrap()
+        .read_to_end(&mut decoded)
+        .unwrap();
+    assert_eq!(decoded, [first.as_slice(), second.as_slice()].concat());
 }
 
 #[test]
