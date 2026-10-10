@@ -29,6 +29,12 @@ test = false
 doc = false
 
 [[bin]]
+name = "lzma2_mt_roundtrip"
+path = "fuzz_targets/lzma2_mt_roundtrip.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "lzip"
 path = "fuzz_targets/lzip.rs"
 test = false

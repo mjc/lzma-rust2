@@ -28,9 +28,12 @@ jobs:
         include:
           - target: lzma_roundtrip
           - target: lzma2_roundtrip
+          - target: lzma2_mt_roundtrip
           - target: lzma_roundtrip
             cargo_args: --no-default-features
           - target: lzma2_roundtrip
+            cargo_args: --no-default-features
+          - target: lzma2_mt_roundtrip
             cargo_args: --no-default-features
     steps:
       - uses: actions/checkout@v7
@@ -41,16 +44,16 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz
       - name: Seed encoder round trips
-        if: matrix.target == 'lzma_roundtrip' || matrix.target == 'lzma2_roundtrip'
+        if: matrix.target == 'lzma_roundtrip' || matrix.target == 'lzma2_roundtrip' || matrix.target == 'lzma2_mt_roundtrip'
         run: cargo run --manifest-path fuzz/Cargo.toml --example seed_encoders
       - name: Check encoder harness
-        if: matrix.target == 'lzma_roundtrip' || matrix.target == 'lzma2_roundtrip'
+        if: matrix.target == 'lzma_roundtrip' || matrix.target == 'lzma2_roundtrip' || matrix.target == 'lzma2_mt_roundtrip'
         run: cargo test --manifest-path fuzz/Cargo.toml --test encoder_roundtrip ${{matrix.cargo_args}}
       - name: Run fuzzing
         run: |
           limits=()
           case '${{matrix.target}}' in
-            lzma_roundtrip|lzma2_roundtrip)
+            lzma_roundtrip|lzma2_roundtrip|lzma2_mt_roundtrip)
               limits=(-max_len=65548 -timeout=10 -rss_limit_mb=512)
               ;;
           esac

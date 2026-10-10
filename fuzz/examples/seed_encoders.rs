@@ -52,13 +52,13 @@ fn main() -> std::io::Result<()> {
         ),
     ];
 
-    for target in ["lzma_roundtrip", "lzma2_roundtrip"] {
+    for target in ["lzma_roundtrip", "lzma2_roundtrip", "lzma2_mt_roundtrip"] {
         let directory = root.join(target);
         fs::create_dir_all(&directory)?;
         for (name, data) in &seeds {
             fs::write(directory.join(name), data)?;
         }
-        if target == "lzma2_roundtrip" {
+        if target != "lzma_roundtrip" {
             fs::write(
                 directory.join("reset-after-uncompressed"),
                 regression_input::reset_after_uncompressed(),

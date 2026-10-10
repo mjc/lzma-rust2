@@ -4,7 +4,9 @@ mod encoder_roundtrip;
 #[path = "../regression_input.rs"]
 mod regression_input;
 
-use encoder_roundtrip::{lzma2_roundtrip, lzma_roundtrip, HEADER_SIZE, MAX_INPUT_SIZE};
+use encoder_roundtrip::{
+    lzma2_mt_roundtrip, lzma2_roundtrip, lzma_roundtrip, HEADER_SIZE, MAX_INPUT_SIZE,
+};
 
 fn case(settings: [u8; HEADER_SIZE], payload: &[u8]) -> Vec<u8> {
     [settings.as_slice(), payload].concat()
@@ -52,9 +54,11 @@ fn tiny_writes_flushes_and_independent_chunks_round_trip() {
 fn rejects_inputs_outside_the_harness_limits() {
     assert!(lzma_roundtrip(&[0; HEADER_SIZE - 1]).is_none());
     assert!(lzma2_roundtrip(&[0; HEADER_SIZE - 1]).is_none());
+    assert!(lzma2_mt_roundtrip(&[0; HEADER_SIZE - 1]).is_none());
     let oversized = vec![0; HEADER_SIZE + MAX_INPUT_SIZE + 1];
     assert!(lzma_roundtrip(&oversized).is_none());
     assert!(lzma2_roundtrip(&oversized).is_none());
+    assert!(lzma2_mt_roundtrip(&oversized).is_none());
 }
 
 #[test]
@@ -67,4 +71,16 @@ fn known_size_header_with_end_marker_round_trips() {
 fn independent_lzma2_chunk_with_uncompressed_prefix_keeps_dictionary_in_sync() {
     let input = regression_input::reset_after_uncompressed();
     assert!(lzma2_roundtrip(&input).is_some());
+    assert!(lzma2_mt_roundtrip(input).is_some());
+}
+
+#[test]
+fn threaded_lzma2_round_trips_across_block_boundaries() {
+    let payload: Vec<_> = (0..3 * 4096 + 137)
+        .map(|i| (i * 17 + i / 251) as u8)
+        .collect();
+    for workers in 0..3 {
+        let input = case([0, 3, 0, 2, 1, 24, 0, 0, 2, 2, 1, workers], &payload);
+        assert!(lzma2_mt_roundtrip(&input).is_some());
+    }
 }

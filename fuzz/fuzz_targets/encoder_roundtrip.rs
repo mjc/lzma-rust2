@@ -5,7 +5,8 @@ use std::{
 
 use liblzma::stream::{Filters, Stream};
 use lzma_rust2::{
-    EncodeMode, Lzma2Options, Lzma2Reader, Lzma2Writer, LzmaOptions, LzmaReader, LzmaWriter, MfType,
+    EncodeMode, Lzma2Options, Lzma2Reader, Lzma2Writer, Lzma2WriterMt, LzmaOptions, LzmaReader,
+    LzmaWriter, MfType,
 };
 
 pub const HEADER_SIZE: usize = 12;
@@ -85,14 +86,16 @@ impl Read for FragmentedInput<'_> {
     }
 }
 
-fn write_input(writer: &mut impl Write, payload: &[u8], data: &[u8]) {
+fn write_input(writer: &mut impl Write, payload: &[u8], data: &[u8], max_flushes: usize) {
     let chunk_size = [1, 7, 273, 4096, MAX_INPUT_SIZE][usize::from(data[8] % 5)];
     let flush_interval = usize::from(data[9]);
+    let mut flushes = 0;
     writer.write_all(&[]).unwrap();
     for (index, chunk) in payload.chunks(chunk_size).enumerate() {
         writer.write_all(chunk).unwrap();
-        if flush_interval != 0 && (index + 1) % flush_interval == 0 {
+        if flush_interval != 0 && (index + 1) % flush_interval == 0 && flushes < max_flushes {
             writer.flush().unwrap();
+            flushes += 1;
         }
     }
     writer.flush().unwrap();
@@ -160,7 +163,7 @@ pub fn lzma_roundtrip(data: &[u8]) -> Option<()> {
         known_size.then_some(payload.len() as u64),
     )
     .unwrap();
-    write_input(&mut writer, payload, data);
+    write_input(&mut writer, payload, data, usize::MAX);
     let compressed = writer.finish().unwrap().bytes;
     let reader = if header {
         LzmaReader::new_mem_limit(input(&compressed, data), 16 * 1024, None).unwrap()
@@ -213,7 +216,7 @@ pub fn lzma2_roundtrip(data: &[u8]) -> Option<()> {
             chunk_size,
         },
     );
-    write_input(&mut writer, payload, data);
+    write_input(&mut writer, payload, data, usize::MAX);
     let compressed = writer.finish().unwrap().bytes;
     if options.preset_dict.is_none() {
         check_output(
@@ -232,6 +235,40 @@ pub fn lzma2_roundtrip(data: &[u8]) -> Option<()> {
         options.preset_dict.as_deref(),
     )
     .unwrap();
+    check_output(reader, payload, data);
+    Some(())
+}
+
+#[allow(dead_code)]
+pub fn lzma2_mt_roundtrip(data: &[u8]) -> Option<()> {
+    let (mut options, payload) = options(data, true)?;
+    // Each worker starts a fresh block, so preset dictionaries are not used.
+    options.preset_dict = None;
+    let chunk_size = u64::from(options.dict_size) * if data[10] & 4 == 0 { 1 } else { 2 };
+    let workers = [1, 2, 4][usize::from(data[11] % 3)];
+    let mut writer = Lzma2WriterMt::new(
+        BoundedOutput::new(payload.len()),
+        Lzma2Options {
+            lzma_options: options.clone(),
+            chunk_size: NonZeroU64::new(chunk_size),
+        },
+        workers,
+    )
+    .unwrap();
+    // A flush dispatches a block; cap them so one-byte writes stay cheap to fuzz.
+    write_input(&mut writer, payload, data, 16);
+    let compressed = writer.finish().unwrap().bytes;
+    check_output(
+        liblzma::read::XzDecoder::new_stream(
+            compressed.as_slice(),
+            reference_stream(&options, true),
+        ),
+        payload,
+        data,
+    );
+    let reader =
+        Lzma2Reader::new_mem_limit(input(&compressed, data), options.dict_size, 16 * 1024, None)
+            .unwrap();
     check_output(reader, payload, data);
     Some(())
 }
