@@ -350,6 +350,9 @@ impl<W: Write> Lzma2Writer<W> {
             self.dict_reset_needed = false;
         }
         self.state_reset_needed = true;
+        // The first uncompressed chunk has already emitted the dictionary reset.
+        // A later compressed chunk in this independent block must keep its history.
+        self.force_independent_chunk = false;
         Ok(())
     }
 

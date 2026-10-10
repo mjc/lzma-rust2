@@ -9,7 +9,24 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-lzma-rust2 = { path = "..", features = [ "lzip", "xz" ] }
+liblzma = { version = "0.4", features = ["static"] }
+lzma-rust2 = { path = "..", default-features = false, features = ["std", "encoder", "lzip", "xz"] }
+
+[features]
+default = ["optimization"]
+optimization = ["lzma-rust2/optimization"]
+
+[[bin]]
+name = "lzma_roundtrip"
+path = "fuzz_targets/lzma_roundtrip.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "lzma2_roundtrip"
+path = "fuzz_targets/lzma2_roundtrip.rs"
+test = false
+doc = false
 
 [[bin]]
 name = "lzip"

@@ -25,6 +25,13 @@ jobs:
           - lzma2_stream
           - xz
           - xz_stream
+        include:
+          - target: lzma_roundtrip
+          - target: lzma2_roundtrip
+          - target: lzma_roundtrip
+            cargo_args: --no-default-features
+          - target: lzma2_roundtrip
+            cargo_args: --no-default-features
     steps:
       - uses: actions/checkout@v7
       - name: Install rust version
@@ -33,5 +40,18 @@ jobs:
           target: x86_64-unknown-linux-gnu
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz
+      - name: Seed encoder round trips
+        if: matrix.target == 'lzma_roundtrip' || matrix.target == 'lzma2_roundtrip'
+        run: python3 fuzz/seed_encoders.py
+      - name: Check encoder harness
+        if: matrix.target == 'lzma_roundtrip' || matrix.target == 'lzma2_roundtrip'
+        run: cargo test --manifest-path fuzz/Cargo.toml --test encoder_roundtrip ${{matrix.cargo_args}}
       - name: Run fuzzing
-        run: cargo fuzz run ${{matrix.target}} -- -max_total_time=180
+        run: |
+          limits=()
+          case '${{matrix.target}}' in
+            lzma_roundtrip|lzma2_roundtrip)
+              limits=(-max_len=65548 -timeout=10 -rss_limit_mb=512)
+              ;;
+          esac
+          cargo fuzz run ${{matrix.target}} ${{matrix.cargo_args}} -- -max_total_time=180 "${limits[@]}"
