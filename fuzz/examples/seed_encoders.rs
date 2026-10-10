@@ -87,5 +87,16 @@ fn main() -> std::io::Result<()> {
             )?;
         }
     }
+
+    let directory = root.join("lzma2_window_roundtrip");
+    fs::create_dir_all(&directory)?;
+    for (name, settings) in [
+        ("raw-small-dict", [0, 0, 0, 1]),
+        ("raw-fragmented", [64, 1, 2, 2]),
+        ("xz-small-dict", [128, 2, 4, 3]),
+        ("xz-patterned", [255, 3, 15, 4]),
+    ] {
+        fs::write(directory.join(name), settings)?;
+    }
     Ok(())
 }
