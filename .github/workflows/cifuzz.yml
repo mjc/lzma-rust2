@@ -42,7 +42,7 @@ jobs:
         run: cargo install cargo-fuzz
       - name: Seed encoder round trips
         if: matrix.target == 'lzma_roundtrip' || matrix.target == 'lzma2_roundtrip'
-        run: python3 fuzz/seed_encoders.py
+        run: cargo run --manifest-path fuzz/Cargo.toml --example seed_encoders
       - name: Check encoder harness
         if: matrix.target == 'lzma_roundtrip' || matrix.target == 'lzma2_roundtrip'
         run: cargo test --manifest-path fuzz/Cargo.toml --test encoder_roundtrip ${{matrix.cargo_args}}
