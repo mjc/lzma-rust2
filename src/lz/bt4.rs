@@ -89,23 +89,13 @@ impl Bt4 {
 
             let mut len = len0.min(len1);
 
-            if encoder.get_byte_by_pos(encoder.read_pos + len - delta)
-                == encoder.get_byte_by_pos(encoder.read_pos + len)
-            {
-                // No need to look for longer matches than niceLenLimit
-                // because we only are updating the tree, not returning
-                // matches found to the caller.
-                loop {
-                    len += 1;
-                    if len == nice_len_limit {
-                        self.tree[ptr1 as usize] = self.tree[pair as usize];
-                        self.tree[ptr0 as usize] = self.tree[pair as usize + 1];
-                        return;
-                    }
-                    if encoder.get_byte(len as _, delta as _) != encoder.get_byte(len as _, 0) {
-                        break;
-                    }
-                }
+            // Tree maintenance needs only the nice-length prefix. Reuse the
+            // word scanner instead of checking both buffer bounds per byte.
+            len = extend_match(&encoder.buf, encoder.read_pos, len, delta, nice_len_limit);
+            if len == nice_len_limit {
+                self.tree[ptr1 as usize] = self.tree[pair as usize];
+                self.tree[ptr0 as usize] = self.tree[pair as usize + 1];
+                return;
             }
 
             if encoder.get_byte(len as _, delta) < encoder.get_byte(len as _, 0) {
@@ -287,6 +277,115 @@ impl MatchFind for Bt4 {
             self.hash.update_tables(self.lz_pos);
 
             self.skip(encoder, nice_len_limit, current_match);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reach a third node after both bounds establish a nonzero common prefix.
+    #[test]
+    fn skip_preserves_descendant_links_with_inherited_prefix() {
+        let mut encoder = LzEncoder::new_bt4(4096, 0, 0, 32, 273, 3);
+        let mut finder = Bt4::new(4096, 32, 3);
+        for prefix in [1usize, 7, 8, 9] {
+            let limit = prefix + 17;
+            for first_is_lower in [false, true] {
+                for third_byte in [b'l', b'm', b'n'] {
+                    encoder.data.buf = vec![b'm'; 4 * limit];
+                    encoder.data.read_pos = (3 * limit) as i32;
+                    // The first two nodes lie on opposite sides of the new key.
+                    // The third traversal inherits min(prefix, prefix + 2).
+                    encoder.data.buf[2 * limit + prefix] = if first_is_lower { b'l' } else { b'n' };
+                    encoder.data.buf[limit + prefix + 2] = if first_is_lower { b'n' } else { b'l' };
+                    encoder.data.buf[prefix + 3] = third_byte;
+
+                    finder.tree.fill(0);
+                    finder.cyclic_pos = 0;
+                    finder.lz_pos = finder.cyclic_size;
+                    let nodes = [1, 2, 3].map(|distance| finder.lz_pos - (distance * limit) as i32);
+                    let pairs = nodes.map(|node| node as usize * 2);
+                    let first_child = pairs[0] + usize::from(first_is_lower);
+                    let second_child = pairs[1] + usize::from(!first_is_lower);
+                    finder.tree[first_child] = nodes[1];
+                    finder.tree[second_child] = nodes[2];
+                    finder.tree[pairs[2]] = 21;
+                    finder.tree[pairs[2] + 1] = 22;
+
+                    let mut expected = finder.tree.clone();
+                    expected[usize::from(!first_is_lower)] = nodes[0];
+                    expected[usize::from(first_is_lower)] = nodes[1];
+                    let (lower_link, upper_link) = if first_is_lower {
+                        (first_child, second_child)
+                    } else {
+                        (second_child, first_child)
+                    };
+                    match third_byte {
+                        b'm' => {
+                            // A full match adopts both children of the third node.
+                            expected[lower_link] = 21;
+                            expected[upper_link] = 22;
+                        }
+                        b'l' => {
+                            expected[lower_link] = nodes[2];
+                            expected[upper_link] = 0;
+                            expected[pairs[2] + 1] = 0;
+                        }
+                        b'n' => {
+                            expected[upper_link] = nodes[2];
+                            expected[lower_link] = 0;
+                            expected[pairs[2]] = 0;
+                        }
+                        _ => unreachable!(),
+                    }
+                    finder.skip(&mut encoder.data, limit as i32, nodes[0]);
+                    assert_eq!(
+                        finder.tree, expected,
+                        "prefix={prefix}, first_is_lower={first_is_lower}, third_byte={third_byte}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn skip_preserves_tree_links_at_word_and_nice_length_boundaries() {
+        let mut encoder = LzEncoder::new_bt4(4096, 0, 0, 32, 273, 1);
+        let mut finder = Bt4::new(4096, 32, 1);
+        for limit in [4, 7, 8, 9, 31, 32, 33, 273] {
+            for mismatch in 0..=limit {
+                for previous_byte in [b'l', b'n'] {
+                    // End the buffer exactly at the comparison limit. Position
+                    // zero in the cyclic tree forces the prior node to wrap.
+                    encoder.data.buf = vec![b'm'; 2 * limit];
+                    encoder.data.read_pos = limit as i32;
+                    if mismatch < limit {
+                        encoder.data.buf[mismatch] = previous_byte;
+                    }
+                    finder.tree.fill(0);
+                    finder.cyclic_pos = 0;
+                    finder.lz_pos = finder.cyclic_size;
+                    let current_match = finder.lz_pos - limit as i32;
+                    let pair = current_match as usize * 2;
+                    finder.tree[pair] = 21;
+                    finder.tree[pair + 1] = 22;
+                    finder.skip(&mut encoder.data, limit as i32, current_match);
+                    let expected = if mismatch == limit {
+                        [21, 22]
+                    } else if previous_byte < b'm' {
+                        [current_match, 0]
+                    } else {
+                        [0, current_match]
+                    };
+                    assert_eq!(
+                        finder.tree[..2],
+                        expected,
+                        "limit={limit}, mismatch={mismatch}, previous={previous_byte}"
+                    );
+                }
+            }
         }
     }
 }
