@@ -1,12 +1,13 @@
 use std::{
-    io::{self, Read, Write},
+    io::{self, Cursor, Read, Write},
     num::NonZeroU64,
 };
 
 use liblzma::stream::{Filters, Stream};
 use lzma_rust2::{
-    EncodeMode, Lzma2Options, Lzma2Reader, Lzma2Writer, Lzma2WriterMt, LzmaOptions, LzmaReader,
-    LzmaWriter, MfType,
+    filter::FilterType, CheckType, EncodeMode, LzipOptions, LzipReader, LzipReaderMt, LzipWriter,
+    LzipWriterMt, Lzma2Options, Lzma2Reader, Lzma2Writer, Lzma2WriterMt, LzmaOptions, LzmaReader,
+    LzmaWriter, MfType, XzOptions, XzReader, XzWriter, XzWriterMt,
 };
 
 pub const HEADER_SIZE: usize = 12;
@@ -270,5 +271,135 @@ pub fn lzma2_mt_roundtrip(data: &[u8]) -> Option<()> {
         Lzma2Reader::new_mem_limit(input(&compressed, data), options.dict_size, 16 * 1024, None)
             .unwrap();
     check_output(reader, payload, data);
+    Some(())
+}
+
+fn container_options(data: &[u8]) -> Option<(LzmaOptions, &[u8])> {
+    let (mut options, payload) = options(data, true)?;
+    // Container formats do not carry an external preset dictionary.
+    options.preset_dict = None;
+    Some((options, payload))
+}
+
+fn check_xz(compressed: &[u8], payload: &[u8], data: &[u8]) {
+    check_output(XzReader::new(input(compressed, data), false), payload, data);
+    check_output(liblzma::read::XzDecoder::new(compressed), payload, data);
+}
+
+fn set_xz_filters(options: &mut XzOptions, data: &[u8]) {
+    match data[7] >> 4 {
+        1 => options.prepend_pre_filter(FilterType::Delta, 1 + u32::from(data[6] % 32)),
+        2 => options.prepend_pre_filter(FilterType::BcjX86, 0),
+        3 => {
+            options.prepend_pre_filter(FilterType::Delta, 1 + u32::from(data[6] % 32));
+            options.prepend_pre_filter(FilterType::BcjX86, 0);
+        }
+        4 => options.prepend_pre_filter(FilterType::BcjPpc, 0),
+        5 => options.prepend_pre_filter(FilterType::BcjIa64, 0),
+        6 => options.prepend_pre_filter(FilterType::BcjArm, 0),
+        7 => options.prepend_pre_filter(FilterType::BcjArmThumb, 0),
+        8 => options.prepend_pre_filter(FilterType::BcjSparc, 0),
+        9 => options.prepend_pre_filter(FilterType::BcjArm64, 0),
+        10 => options.prepend_pre_filter(FilterType::BcjRiscv, 0),
+        _ => {}
+    }
+}
+
+#[allow(dead_code)]
+pub fn xz_roundtrip(data: &[u8]) -> Option<()> {
+    let (lzma_options, payload) = container_options(data)?;
+    let dict_size = u64::from(lzma_options.dict_size);
+    let mut options = XzOptions {
+        lzma_options,
+        check_type: [
+            CheckType::None,
+            CheckType::Crc32,
+            CheckType::Crc64,
+            CheckType::Sha256,
+        ][usize::from(data[7] % 4)],
+        block_size: match data[10] % 3 {
+            0 => None,
+            1 => NonZeroU64::new(dict_size),
+            _ => NonZeroU64::new(dict_size * 2),
+        },
+        filters: Vec::new(),
+    };
+    set_xz_filters(&mut options, data);
+    let mut writer = XzWriter::new(BoundedOutput::new(payload.len()), options).unwrap();
+    write_input(&mut writer, payload, data, 16);
+    let compressed = writer.finish().unwrap().bytes;
+    check_xz(&compressed, payload, data);
+    Some(())
+}
+
+#[allow(dead_code)]
+pub fn xz_mt_roundtrip(data: &[u8]) -> Option<()> {
+    let (lzma_options, payload) = container_options(data)?;
+    let dict_size = u64::from(lzma_options.dict_size);
+    let mut options = XzOptions {
+        lzma_options,
+        check_type: [
+            CheckType::None,
+            CheckType::Crc32,
+            CheckType::Crc64,
+            CheckType::Sha256,
+        ][usize::from(data[7] % 4)],
+        block_size: NonZeroU64::new(dict_size),
+        filters: Vec::new(),
+    };
+    set_xz_filters(&mut options, data);
+    let workers = [1, 2, 4][usize::from(data[11] % 3)];
+    let mut writer = XzWriterMt::new(BoundedOutput::new(payload.len()), options, workers).unwrap();
+    write_input(&mut writer, payload, data, 16);
+    let compressed = writer.finish().unwrap().bytes;
+    check_xz(&compressed, payload, data);
+    Some(())
+}
+
+fn check_lzip(compressed: &[u8], payload: &[u8], data: &[u8]) {
+    check_output(LzipReader::new(input(compressed, data)), payload, data);
+    let reader = LzipReaderMt::new_mem_limit(Cursor::new(compressed), 16 * 1024 * 1024, 2).unwrap();
+    check_output(reader, payload, data);
+}
+
+#[allow(dead_code)]
+pub fn lzip_roundtrip(data: &[u8]) -> Option<()> {
+    let (lzma_options, payload) = container_options(data)?;
+    let member_size = match data[10] % 3 {
+        0 => None,
+        1 => NonZeroU64::new(u64::from(lzma_options.dict_size)),
+        _ => NonZeroU64::new(u64::from(lzma_options.dict_size) * 2),
+    };
+    let mut writer = LzipWriter::new(
+        BoundedOutput::new(payload.len()),
+        LzipOptions {
+            lzma_options,
+            member_size,
+        },
+    );
+    write_input(&mut writer, payload, data, 16);
+    let compressed = writer.finish().unwrap().bytes;
+    check_lzip(&compressed, payload, data);
+    Some(())
+}
+
+#[allow(dead_code)]
+pub fn lzip_mt_roundtrip(data: &[u8]) -> Option<()> {
+    let (lzma_options, payload) = container_options(data)?;
+    let member_size =
+        NonZeroU64::new(u64::from(lzma_options.dict_size) * if data[10] & 4 == 0 { 1 } else { 2 });
+    let workers = [1, 2, 4][usize::from(data[11] % 3)];
+    let mut writer = LzipWriterMt::new(
+        BoundedOutput::new(payload.len()),
+        LzipOptions {
+            lzma_options,
+            member_size,
+        },
+        workers,
+    )
+    .unwrap();
+    write_input(&mut writer, payload, data, 16);
+    let compressed = writer.finish().unwrap().bytes;
+    check_lzip(&compressed, payload, data);
     Some(())
 }

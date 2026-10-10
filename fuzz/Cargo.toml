@@ -35,6 +35,30 @@ test = false
 doc = false
 
 [[bin]]
+name = "xz_roundtrip"
+path = "fuzz_targets/xz_roundtrip.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "xz_mt_roundtrip"
+path = "fuzz_targets/xz_mt_roundtrip.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "lzip_roundtrip"
+path = "fuzz_targets/lzip_roundtrip.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "lzip_mt_roundtrip"
+path = "fuzz_targets/lzip_mt_roundtrip.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "lzip"
 path = "fuzz_targets/lzip.rs"
 test = false

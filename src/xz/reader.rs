@@ -1,16 +1,16 @@
 use alloc::{boxed::Box, vec::Vec};
 
 use super::{
-    BlockHeader, CheckType, ChecksumCalculator, Index, IndexRecord, StreamFooter, StreamHeader,
-    XZ_FOOTER_MAGIC, XZ_MAGIC, count_multibyte_integer_size, parse_multibyte_integer,
+    count_multibyte_integer_size, parse_multibyte_integer, BlockHeader, CheckType,
+    ChecksumCalculator, Index, IndexRecord, StreamFooter, StreamHeader, XZ_FOOTER_MAGIC, XZ_MAGIC,
 };
 use crate::{
-    CountingReader, Lzma2Reader, Read, Result,
     crc::Crc32,
     error_eof, error_invalid_data, error_out_of_memory, error_unsupported,
-    filter::{FilterConfig, FilterType, StreamFilter, bcj::BcjReader, delta::DeltaReader},
-    lzma2_reader::{Lzma2Stream, get_memory_usage, get_stream_memory_usage},
+    filter::{bcj::BcjReader, delta::DeltaReader, FilterConfig, FilterType, StreamFilter},
+    lzma2_reader::{get_memory_usage, get_stream_memory_usage, Lzma2Stream},
     stream::{Action, Status, StreamResult},
+    CountingReader, Lzma2Reader, Read, Result,
 };
 
 #[allow(clippy::large_enum_variant)]
@@ -287,10 +287,15 @@ impl<R: Read> XzReader<R> {
 
         let mut padding_buf = [0u8; 3];
 
-        let bytes_read = self.reader.read(&mut padding_buf[..padding_needed])?;
-
-        if bytes_read != padding_needed {
-            return Err(error_invalid_data("incomplete XZ block padding"));
+        let mut bytes_read = 0;
+        while bytes_read < padding_needed {
+            let count = self
+                .reader
+                .read(&mut padding_buf[bytes_read..padding_needed])?;
+            if count == 0 {
+                return Err(error_invalid_data("incomplete XZ block padding"));
+            }
+            bytes_read += count;
         }
 
         if !padding_buf[..bytes_read].iter().all(|&byte| byte == 0) {

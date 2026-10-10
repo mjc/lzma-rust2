@@ -154,6 +154,32 @@ fn empty_input_is_valid_empty_stream() {
 }
 
 #[test]
+fn prefilters_are_applied_before_parallel_block_encoding() {
+    let input = b"\xe8\x01\x00\x00\x00".repeat(1800);
+    let mut options = XzOptions::with_preset(1);
+    options.lzma_options.dict_size = 4096;
+    options.set_block_size(NonZeroU64::new(4096));
+    options.prepend_pre_filter(lzma_rust2::filter::FilterType::Delta, 1);
+    options.prepend_pre_filter(lzma_rust2::filter::FilterType::BcjX86, 0);
+
+    let mut writer = XzWriterMt::new(Vec::new(), options, 2).unwrap();
+    writer.write_all(&input).unwrap();
+    let compressed = writer.finish().unwrap();
+
+    let mut decoded = Vec::new();
+    XzReader::new(compressed.as_slice(), false)
+        .read_to_end(&mut decoded)
+        .unwrap();
+    assert_eq!(decoded, input);
+
+    decoded.clear();
+    liblzma::read::XzDecoder::new(compressed.as_slice())
+        .read_to_end(&mut decoded)
+        .unwrap();
+    assert_eq!(decoded, input);
+}
+
+#[test]
 fn round_trip_executable_0() {
     test_round_trip(EXECUTABLE, 0);
 }

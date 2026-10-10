@@ -1,24 +1,25 @@
 use std::{
     io::{self, Write},
     sync::{
-        Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::SyncSender,
+        Arc, Mutex,
     },
 };
 
 use super::{
-    CheckType, ChecksumCalculator, IndexRecord, add_padding, write_xz_block_header, write_xz_index,
-    write_xz_stream_footer, write_xz_stream_header,
+    add_padding, write_xz_block_header, write_xz_index, write_xz_stream_footer,
+    write_xz_stream_header, writer::encode_block_with_filters, CheckType, ChecksumCalculator,
+    IndexRecord,
 };
 use crate::{
-    AutoFinish, AutoFinisher, Lzma2Options, Result, XzOptions,
-    enc::{Lzma2Writer, LzmaOptions},
+    enc::LzmaOptions,
     error_invalid_input,
     filter::{FilterConfig, FilterType},
     set_error,
     work_pool::{WorkPool, WorkPoolConfig},
     work_queue::WorkerHandle,
+    AutoFinish, AutoFinisher, Result, XzOptions,
 };
 
 /// A work unit for a worker thread.
@@ -27,6 +28,7 @@ struct WorkUnit {
     uncompressed_data: Vec<u8>,
     lzma_options: LzmaOptions,
     check_type: CheckType,
+    filters: Vec<FilterConfig>,
 }
 
 /// A result unit from a worker thread.
@@ -152,6 +154,7 @@ impl<W: Write> XzWriterMt<W> {
                 uncompressed_data: data,
                 lzma_options: self.options.lzma_options.clone(),
                 check_type: self.options.check_type,
+                filters: self.options.filters.clone(),
             })
         })?;
 
@@ -327,37 +330,28 @@ fn worker_thread_logic(
             }
         };
 
-        let mut compressed_buffer = Vec::new();
         let uncompressed_size = work_unit.uncompressed_data.len() as u64;
 
         let mut checksum_calculator = ChecksumCalculator::new(work_unit.check_type);
         checksum_calculator.update(&work_unit.uncompressed_data);
         let checksum = checksum_calculator.finalize_to_bytes();
 
-        let options = Lzma2Options {
-            lzma_options: work_unit.lzma_options,
-            ..Default::default()
-        };
-
-        let mut writer = Lzma2Writer::new(&mut compressed_buffer, options);
-        let result = match writer.write_all(&work_unit.uncompressed_data) {
-            Ok(_) => match writer.finish() {
-                Ok(_) => ResultUnit {
-                    compressed_data: compressed_buffer,
-                    checksum,
-                    uncompressed_size,
-                },
-                Err(error) => {
-                    active_workers.fetch_sub(1, Ordering::Release);
-                    set_error(error, &error_store, &shutdown_flag);
-                    return;
-                }
-            },
+        let compressed_data = match encode_block_with_filters(
+            &work_unit.uncompressed_data,
+            &work_unit.filters,
+            &work_unit.lzma_options,
+        ) {
+            Ok(data) => data,
             Err(error) => {
                 active_workers.fetch_sub(1, Ordering::Release);
                 set_error(error, &error_store, &shutdown_flag);
                 return;
             }
+        };
+        let result = ResultUnit {
+            compressed_data,
+            checksum,
+            uncompressed_size,
         };
 
         if result_tx.send((index, result)).is_err() {

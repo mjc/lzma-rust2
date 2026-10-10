@@ -1,4 +1,4 @@
-//! Generate reproducible inputs for both encoder round-trip targets.
+//! Generate reproducible inputs for the encoder round-trip targets.
 
 use std::{fs, path::Path};
 
@@ -8,7 +8,6 @@ mod regression_input;
 fn main() -> std::io::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("corpus");
 
-    // Twelve settings bytes precede each payload; see README.md for the mapping.
     let fragmented = [0, 3, 0, 2, 3, 24, 0, 0, 1, 3, 1, 1];
     let preset = [0, 3, 0, 2, 7, 24, 0, 0, 2, 3, 1, 2];
     let known_size = [0, 3, 0, 2, 27, 24, 0, 0, 2, 0, 0, 3];
@@ -52,13 +51,36 @@ fn main() -> std::io::Result<()> {
         ),
     ];
 
-    for target in ["lzma_roundtrip", "lzma2_roundtrip", "lzma2_mt_roundtrip"] {
+    for target in [
+        "lzma_roundtrip",
+        "lzma2_roundtrip",
+        "lzma2_mt_roundtrip",
+        "xz_roundtrip",
+        "xz_mt_roundtrip",
+        "lzip_roundtrip",
+        "lzip_mt_roundtrip",
+    ] {
         let directory = root.join(target);
         fs::create_dir_all(&directory)?;
         for (name, data) in &seeds {
             fs::write(directory.join(name), data)?;
         }
-        if target != "lzma_roundtrip" {
+        if target.starts_with("xz_") {
+            for filter in 1..=10 {
+                let mut settings = fragmented;
+                settings[7] = filter << 4 | 2;
+                settings[10] = 1;
+                fs::write(
+                    directory.join(format!("filter-{filter}")),
+                    [
+                        settings.as_slice(),
+                        b"\xe8\x01\x00\x00\x00".repeat(1200).as_slice(),
+                    ]
+                    .concat(),
+                )?;
+            }
+        }
+        if target.starts_with("lzma2_") {
             fs::write(
                 directory.join("reset-after-uncompressed"),
                 regression_input::reset_after_uncompressed(),

@@ -2,14 +2,14 @@ use alloc::{boxed::Box, vec::Vec};
 use core::num::NonZeroU64;
 
 use super::{
-    CheckType, ChecksumCalculator, IndexRecord, add_padding, write_xz_block_header, write_xz_index,
-    write_xz_stream_footer, write_xz_stream_header,
+    add_padding, write_xz_block_header, write_xz_index, write_xz_stream_footer,
+    write_xz_stream_header, CheckType, ChecksumCalculator, IndexRecord,
 };
 use crate::{
-    AutoFinish, AutoFinisher, CountingWriter, Lzma2Options, Result, Write,
     enc::{Lzma2Writer, LzmaOptions},
     error_invalid_data, error_invalid_input,
-    filter::{FilterConfig, FilterType, bcj::BcjWriter, delta::DeltaWriter},
+    filter::{bcj::BcjWriter, delta::DeltaWriter, FilterConfig, FilterType},
+    AutoFinish, AutoFinisher, CountingWriter, Lzma2Options, Result, Write,
 };
 
 enum FilterWriter<W: Write> {
@@ -191,6 +191,39 @@ impl<W: Write> FilterWriter<W> {
             FilterWriter::Dummy => unimplemented!(),
         }
     }
+}
+
+pub(super) fn encode_block_with_filters(
+    data: &[u8],
+    pre_filters: &[FilterConfig],
+    lzma_options: &LzmaOptions,
+) -> Result<Vec<u8>> {
+    let mut output = Vec::new();
+    if pre_filters.is_empty() {
+        let mut writer = Lzma2Writer::new(
+            &mut output,
+            Lzma2Options {
+                lzma_options: lzma_options.clone(),
+                ..Default::default()
+            },
+        );
+        writer.write_all(data)?;
+        writer.finish()?;
+    } else {
+        let mut filters = pre_filters.to_vec();
+        filters.push(FilterConfig {
+            filter_type: FilterType::Lzma2,
+            property: 0,
+        });
+        let mut writer = FilterWriter::create_filter_chain(
+            CountingWriter::new(&mut output),
+            &filters,
+            lzma_options,
+        )?;
+        writer.write_all(data)?;
+        writer.finish()?;
+    }
+    Ok(output)
 }
 
 /// Configuration options for XZ compression.

@@ -27,14 +27,40 @@ jobs:
           - xz_stream
         include:
           - target: lzma_roundtrip
+            seed: true
           - target: lzma2_roundtrip
+            seed: true
           - target: lzma2_mt_roundtrip
+            seed: true
+          - target: xz_roundtrip
+            seed: true
+          - target: xz_mt_roundtrip
+            seed: true
+          - target: lzip_roundtrip
+            seed: true
+          - target: lzip_mt_roundtrip
+            seed: true
           - target: lzma_roundtrip
             cargo_args: --no-default-features
+            seed: true
           - target: lzma2_roundtrip
             cargo_args: --no-default-features
+            seed: true
           - target: lzma2_mt_roundtrip
             cargo_args: --no-default-features
+            seed: true
+          - target: xz_roundtrip
+            cargo_args: --no-default-features
+            seed: true
+          - target: xz_mt_roundtrip
+            cargo_args: --no-default-features
+            seed: true
+          - target: lzip_roundtrip
+            cargo_args: --no-default-features
+            seed: true
+          - target: lzip_mt_roundtrip
+            cargo_args: --no-default-features
+            seed: true
     steps:
       - uses: actions/checkout@v7
       - name: Install rust version
@@ -44,17 +70,22 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz
       - name: Seed encoder round trips
-        if: matrix.target == 'lzma_roundtrip' || matrix.target == 'lzma2_roundtrip' || matrix.target == 'lzma2_mt_roundtrip'
+        if: matrix.seed
         run: cargo run --manifest-path fuzz/Cargo.toml --example seed_encoders
       - name: Check encoder harness
-        if: matrix.target == 'lzma_roundtrip' || matrix.target == 'lzma2_roundtrip' || matrix.target == 'lzma2_mt_roundtrip'
+        if: matrix.seed
         run: cargo test --manifest-path fuzz/Cargo.toml --test encoder_roundtrip ${{matrix.cargo_args}}
       - name: Run fuzzing
         run: |
           limits=()
+          runtime=180
           case '${{matrix.target}}' in
             lzma_roundtrip|lzma2_roundtrip|lzma2_mt_roundtrip)
               limits=(-max_len=65548 -timeout=10 -rss_limit_mb=512)
               ;;
+            xz_roundtrip|xz_mt_roundtrip|lzip_roundtrip|lzip_mt_roundtrip)
+              limits=(-max_len=65548 -timeout=10 -rss_limit_mb=512)
+              runtime=60
+              ;;
           esac
-          cargo fuzz run ${{matrix.target}} ${{matrix.cargo_args}} -- -max_total_time=180 "${limits[@]}"
+          cargo fuzz run ${{matrix.target}} ${{matrix.cargo_args}} -- -max_total_time="$runtime" "${limits[@]}"
