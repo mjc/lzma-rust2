@@ -1,16 +1,16 @@
 use alloc::{boxed::Box, vec::Vec};
 
 use super::{
-    count_multibyte_integer_size, parse_multibyte_integer, BlockHeader, CheckType,
-    ChecksumCalculator, Index, IndexRecord, StreamFooter, StreamHeader, XZ_FOOTER_MAGIC, XZ_MAGIC,
+    BlockHeader, CheckType, ChecksumCalculator, Index, IndexRecord, StreamFooter, StreamHeader,
+    XZ_FOOTER_MAGIC, XZ_MAGIC, count_multibyte_integer_size, parse_multibyte_integer,
 };
 use crate::{
+    CountingReader, Lzma2Reader, Read, Result,
     crc::Crc32,
     error_eof, error_invalid_data, error_out_of_memory, error_unsupported,
-    filter::{bcj::BcjReader, delta::DeltaReader, FilterConfig, FilterType, StreamFilter},
-    lzma2_reader::{get_memory_usage, get_stream_memory_usage, Lzma2Stream},
+    filter::{FilterConfig, FilterType, StreamFilter, bcj::BcjReader, delta::DeltaReader},
+    lzma2_reader::{Lzma2Stream, get_memory_usage, get_stream_memory_usage},
     stream::{Action, Status, StreamResult},
-    CountingReader, Lzma2Reader, Read, Result,
 };
 
 #[allow(clippy::large_enum_variant)]

@@ -1,25 +1,24 @@
 use std::{
     io::{self, Write},
     sync::{
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::SyncSender,
-        Arc, Mutex,
     },
 };
 
 use super::{
-    add_padding, write_xz_block_header, write_xz_index, write_xz_stream_footer,
-    write_xz_stream_header, writer::encode_block_with_filters, CheckType, ChecksumCalculator,
-    IndexRecord,
+    CheckType, ChecksumCalculator, IndexRecord, add_padding, write_xz_block_header, write_xz_index,
+    write_xz_stream_footer, write_xz_stream_header, writer::encode_block_with_filters,
 };
 use crate::{
+    AutoFinish, AutoFinisher, Result, XzOptions,
     enc::LzmaOptions,
     error_invalid_input,
     filter::{FilterConfig, FilterType},
     set_error,
     work_pool::{WorkPool, WorkPoolConfig},
     work_queue::WorkerHandle,
-    AutoFinish, AutoFinisher, Result, XzOptions,
 };
 
 /// A work unit for a worker thread.

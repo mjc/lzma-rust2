@@ -82,8 +82,10 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
         with:
           target: x86_64-unknown-linux-gnu
+      - name: Select nightly Cargo
+        run: echo "$(dirname "$(rustup which --toolchain nightly cargo)")" >> "$GITHUB_PATH"
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
       - name: Seed encoder round trips
         if: matrix.seed
         run: cargo run --manifest-path fuzz/Cargo.toml --example seed_encoders
@@ -113,4 +115,4 @@ jobs:
               runtime=60
               ;;
           esac
-          cargo fuzz run ${{matrix.target}} ${{matrix.cargo_args}} -- -max_total_time="$runtime" "${limits[@]}"
+          cargo fuzz run ${{matrix.target}} ${{matrix.cargo_args}} --sanitizer address -- -max_total_time="$runtime" "${limits[@]}"
