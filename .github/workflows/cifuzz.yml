@@ -102,8 +102,7 @@ jobs:
       - name: Check encoder harness
         if: matrix.seed
         run: cargo test --manifest-path fuzz/Cargo.toml --test encoder_roundtrip ${{matrix.cargo_args}}
-      - name: Seed parallel decoders
-        if: matrix.decoder_seed
+      - name: Seed decoder corpus
         run: cargo run --manifest-path fuzz/Cargo.toml --example seed_decoders ${{matrix.cargo_args}}
       - name: Check parallel decoder harness
         if: matrix.decoder_seed
