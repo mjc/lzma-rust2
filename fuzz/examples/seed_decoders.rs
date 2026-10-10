@@ -11,6 +11,7 @@ fn write_seed(
     root: &Path,
     target: &str,
     name: &str,
+    config: u8,
     selector: u8,
     stream: &[u8],
 ) -> std::io::Result<()> {
@@ -18,7 +19,7 @@ fn write_seed(
     fs::create_dir_all(&directory)?;
     fs::write(
         directory.join(name),
-        [[0, selector].as_slice(), stream].concat(),
+        [[config, selector].as_slice(), stream].concat(),
     )
 }
 
@@ -64,16 +65,25 @@ fn main() -> std::io::Result<()> {
         let lzip = valid_streams::lzip(&payload);
 
         write_direct_seed(&root, &["lzma"], name, &lzma)?;
-        write_direct_seed(&root, &["lzma2", "lzma2_stream"], name, &lzma2)?;
+        write_direct_seed(&root, &["lzma2"], name, &lzma2)?;
         write_direct_seed(&root, &["lzip"], name, &lzip)?;
 
         let plan = [0x00, 0x11, 0x22, 0x33, 0x66, 0x99, 0xCC, 0xFF];
         let lzma_plan = [[0; 8].as_slice(), plan.as_slice()].concat();
+        let lzma2_plan = [[0].as_slice(), plan.as_slice()].concat();
         write_planned_seed(&root, "lzma_stream", name, &lzma_plan, &lzma)?;
+        write_planned_seed(&root, "lzma2_stream", name, &lzma2_plan, &lzma2)?;
         write_planned_seed(&root, "lzip_stream", name, &plan, &lzip)?;
 
-        write_seed(&root, "lzma2_mt_decode", name, size as u8, &lzma2)?;
-        write_seed(&root, "lzip_mt_decode", name, size as u8, &lzip)?;
+        write_seed(
+            &root,
+            "lzma2_mt_decode",
+            name,
+            size as u8,
+            size as u8,
+            &lzma2,
+        )?;
+        write_seed(&root, "lzip_mt_decode", name, size as u8, size as u8, &lzip)?;
         for (check_name, check_type) in [
             ("none", CheckType::None),
             ("crc32", CheckType::Crc32),
@@ -81,18 +91,37 @@ fn main() -> std::io::Result<()> {
             ("sha256", CheckType::Sha256),
         ] {
             let xz = valid_streams::xz(&payload, check_type);
-            write_direct_seed(
+            let seed_name = format!("{name}-{check_name}");
+            write_direct_seed(&root, &["xz"], &seed_name, &xz)?;
+            let xz_plan = [[0].as_slice(), plan.as_slice()].concat();
+            write_planned_seed(&root, "xz_stream", &seed_name, &xz_plan, &xz)?;
+            write_seed(
                 &root,
-                &["xz", "xz_stream"],
-                &format!("{name}-{check_name}"),
+                "xz_mt_decode",
+                &seed_name,
+                size as u8,
+                size as u8,
                 &xz,
+            )?;
+
+            let concatenated = [xz.as_slice(), xz.as_slice()].concat();
+            let concatenated_name = format!("{seed_name}-concatenated");
+            write_direct_seed(&root, &["xz"], &concatenated_name, &concatenated)?;
+            let xz_multi_plan = [[1].as_slice(), plan.as_slice()].concat();
+            write_planned_seed(
+                &root,
+                "xz_stream",
+                &concatenated_name,
+                &xz_multi_plan,
+                &concatenated,
             )?;
             write_seed(
                 &root,
                 "xz_mt_decode",
-                &format!("{name}-{check_name}"),
-                size as u8,
-                &xz,
+                &concatenated_name,
+                3,
+                2,
+                &concatenated,
             )?;
         }
     }

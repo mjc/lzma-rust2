@@ -31,6 +31,7 @@ pub fn lzma2(payload: &[u8]) -> Vec<u8> {
     writer.finish().unwrap()
 }
 
+#[allow(dead_code)]
 pub fn lzma(payload: &[u8]) -> Vec<u8> {
     let options = lzma2_options().lzma_options;
     let mut writer =

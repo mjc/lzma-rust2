@@ -3,23 +3,45 @@
 use libfuzzer_sys::fuzz_target;
 use lzma_rust2::{Action, Lzma2Stream, LzmaOptions, Status};
 
+const CHUNK_SIZES: [usize; 16] = [
+    1, 2, 3, 5, 7, 19, 20, 21, 32, 39, 40, 41, 64, 512, 2048, 4096,
+];
+const OUTPUT_SIZES: [usize; 8] = [1, 2, 7, 19, 64, 512, 2048, 4096];
+
 const MAX_OUTPUT: usize = 1 << 18;
 const MAX_STEPS: usize = 4096;
 const MEM_LIMIT_KB: u32 = 16 * 1024;
+const PLAN_LEN: usize = 8;
 
 fuzz_target!(|data: &[u8]| {
-    let mut decoder = Lzma2Stream::new_mem_limit(LzmaOptions::DICT_SIZE_DEFAULT, MEM_LIMIT_KB);
-    let mut output_buf = [0u8; 4096];
-    let mut in_pos = 0;
-    let mut total_out = 0;
+    if data.len() < 1 + PLAN_LEN {
+        return;
+    }
+    let dict_size = [
+        4 * 1024,
+        64 * 1024,
+        1024 * 1024,
+        LzmaOptions::DICT_SIZE_DEFAULT,
+    ][usize::from(data[0]) % 4];
+    let (plan, stream) = data[1..].split_at(PLAN_LEN);
 
-    for _ in 0..MAX_STEPS {
-        let action = if in_pos >= data.len() {
+    let mut decoder = Lzma2Stream::new_mem_limit(dict_size, MEM_LIMIT_KB);
+    let mut output_buf = [0u8; 4096];
+    let mut in_pos = 0usize;
+    let mut total_out = 0usize;
+
+    for step in 0..MAX_STEPS {
+        let choice = plan[step % PLAN_LEN];
+        let chunk = CHUNK_SIZES[usize::from(choice & 0x0F)];
+        let out_len = OUTPUT_SIZES[usize::from(choice >> 4) % OUTPUT_SIZES.len()];
+        let end = in_pos.saturating_add(chunk).min(stream.len());
+        let action = if end >= stream.len() {
             Action::Finish
         } else {
             Action::Run
         };
-        let result = match decoder.process(&data[in_pos..], &mut output_buf, action) {
+        let result = match decoder.process(&stream[in_pos..end], &mut output_buf[..out_len], action)
+        {
             Ok(r) => r,
             Err(_) => return,
         };
@@ -31,7 +53,7 @@ fuzz_target!(|data: &[u8]| {
         if total_out > MAX_OUTPUT {
             return;
         }
-        if result.bytes_consumed == 0 && result.bytes_produced == 0 {
+        if action == Action::Finish && result.bytes_consumed == 0 && result.bytes_produced == 0 {
             return;
         }
     }
