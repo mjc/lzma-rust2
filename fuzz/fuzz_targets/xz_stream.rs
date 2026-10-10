@@ -1,6 +1,10 @@
 #![no_main]
 
+#[path = "reference_decode.rs"]
+mod reference_decode;
+
 use libfuzzer_sys::fuzz_target;
+use liblzma::stream::{Stream, CONCATENATED};
 use lzma_rust2::{Action, Status, XzStream};
 
 const CHUNK_SIZES: [usize; 16] = [
@@ -11,6 +15,7 @@ const OUTPUT_SIZES: [usize; 8] = [1, 2, 7, 19, 64, 512, 2048, 4096];
 const MAX_OUTPUT: usize = 1 << 18;
 const MAX_STEPS: usize = 4096;
 const MEM_LIMIT_KB: u32 = 8 * 1024;
+const REFERENCE_MEM_LIMIT: u64 = 16 * 1024 * 1024;
 const PLAN_LEN: usize = 8;
 
 fuzz_target!(|data: &[u8]| {
@@ -22,8 +27,8 @@ fuzz_target!(|data: &[u8]| {
 
     let mut decoder = XzStream::new_mem_limit(allow_multiple_streams, MEM_LIMIT_KB);
     let mut output_buf = [0u8; 4096];
+    let mut output = Vec::new();
     let mut in_pos = 0usize;
-    let mut total_out = 0usize;
 
     for step in 0..MAX_STEPS {
         let choice = plan[step % PLAN_LEN];
@@ -41,11 +46,21 @@ fuzz_target!(|data: &[u8]| {
             Err(_) => return,
         };
         in_pos += result.bytes_consumed;
-        total_out += result.bytes_produced;
+        output.extend_from_slice(&output_buf[..result.bytes_produced]);
         if result.status == Status::StreamEnd {
+            let flags = if allow_multiple_streams {
+                CONCATENATED
+            } else {
+                0
+            };
+            let reference = reference_decode::read_bounded(liblzma::read::XzDecoder::new_stream(
+                stream,
+                Stream::new_stream_decoder(REFERENCE_MEM_LIMIT, flags).unwrap(),
+            ));
+            reference_decode::compare(Ok(Some(output)), reference);
             return;
         }
-        if total_out > MAX_OUTPUT {
+        if output.len() > MAX_OUTPUT {
             return;
         }
         if action == Action::Finish && result.bytes_consumed == 0 && result.bytes_produced == 0 {
