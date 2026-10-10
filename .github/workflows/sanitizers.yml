@@ -101,6 +101,9 @@ jobs:
           - sanitizer: memory
             target: lzip_stream
             decoder_seed: true
+          - sanitizer: memory
+            target: lzma2_window_roundtrip
+            encoder_seed: true
           - sanitizer: thread
             target: lzma2_mt_decode
             decoder_seed: true
