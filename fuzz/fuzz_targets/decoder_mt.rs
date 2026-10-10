@@ -81,7 +81,10 @@ pub fn lzip_mt_decode(data: &[u8]) -> Option<()> {
     let parallel = LzipReaderMt::new_mem_limit(Cursor::new(stream), MEM_LIMIT_KB, workers)
         .and_then(|reader| read_bounded(reader, header[1]));
     if let Ok(Some(parallel)) = parallel {
-        let serial = read_bounded(LzipReader::new(Cursor::new(stream)), header[1]);
+        let serial = read_bounded(
+            LzipReader::new_mem_limit(Cursor::new(stream), MEM_LIMIT_KB),
+            header[1],
+        );
         compare_successes(serial, Ok(Some(parallel)));
     }
     Some(())
