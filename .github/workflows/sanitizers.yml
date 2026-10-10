@@ -36,6 +36,12 @@ jobs:
             target: lzip_mt_decode
             decoder_seed: true
           - sanitizer: leak
+            target: lzma2
+          - sanitizer: leak
+            target: xz
+          - sanitizer: leak
+            target: lzip
+          - sanitizer: leak
             target: lzma2_mt_roundtrip
             encoder_seed: true
           - sanitizer: leak
@@ -53,6 +59,12 @@ jobs:
           - sanitizer: memory
             target: lzip_mt_decode
             decoder_seed: true
+          - sanitizer: memory
+            target: lzma2
+          - sanitizer: memory
+            target: xz
+          - sanitizer: memory
+            target: lzip
           - sanitizer: thread
             target: lzma2_mt_decode
             decoder_seed: true
