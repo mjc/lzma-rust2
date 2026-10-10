@@ -1,7 +1,7 @@
 use std::{io::Write, num::NonZeroU64};
 
 use lzma_rust2::{
-    CheckType, LzipOptions, LzipWriter, Lzma2Options, Lzma2Writer, XzOptions, XzWriter,
+    CheckType, LzipOptions, LzipWriter, Lzma2Options, Lzma2Writer, LzmaWriter, XzOptions, XzWriter,
 };
 
 const BLOCK_SIZE: u32 = 4 * 1024;
@@ -27,6 +27,14 @@ pub fn payload(size: usize) -> Vec<u8> {
 
 pub fn lzma2(payload: &[u8]) -> Vec<u8> {
     let mut writer = Lzma2Writer::new(Vec::new(), lzma2_options());
+    writer.write_all(payload).unwrap();
+    writer.finish().unwrap()
+}
+
+pub fn lzma(payload: &[u8]) -> Vec<u8> {
+    let options = lzma2_options().lzma_options;
+    let mut writer =
+        LzmaWriter::new_use_header(Vec::new(), &options, Some(payload.len() as u64)).unwrap();
     writer.write_all(payload).unwrap();
     writer.finish().unwrap()
 }

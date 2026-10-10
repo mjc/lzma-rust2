@@ -1,4 +1,4 @@
-//! Generate valid inputs for the parallel decoder fuzz targets.
+//! Generate valid inputs for the decoder fuzz targets.
 
 use std::{fs, path::Path};
 
@@ -22,6 +22,32 @@ fn write_seed(
     )
 }
 
+fn write_direct_seed(
+    root: &Path,
+    targets: &[&str],
+    name: &str,
+    stream: &[u8],
+) -> std::io::Result<()> {
+    for target in targets {
+        let directory = root.join(target);
+        fs::create_dir_all(&directory)?;
+        fs::write(directory.join(name), stream)?;
+    }
+    Ok(())
+}
+
+fn write_planned_seed(
+    root: &Path,
+    target: &str,
+    name: &str,
+    head: &[u8],
+    stream: &[u8],
+) -> std::io::Result<()> {
+    let directory = root.join(target);
+    fs::create_dir_all(&directory)?;
+    fs::write(directory.join(name), [head, stream].concat())
+}
+
 fn main() -> std::io::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("corpus");
 
@@ -33,32 +59,40 @@ fn main() -> std::io::Result<()> {
         ("many-blocks", 3 * 4096 + 137),
     ] {
         let payload = valid_streams::payload(size);
-        write_seed(
-            &root,
-            "lzma2_mt_decode",
-            name,
-            size as u8,
-            &valid_streams::lzma2(&payload),
-        )?;
-        write_seed(
-            &root,
-            "lzip_mt_decode",
-            name,
-            size as u8,
-            &valid_streams::lzip(&payload),
-        )?;
+        let lzma = valid_streams::lzma(&payload);
+        let lzma2 = valid_streams::lzma2(&payload);
+        let lzip = valid_streams::lzip(&payload);
+
+        write_direct_seed(&root, &["lzma"], name, &lzma)?;
+        write_direct_seed(&root, &["lzma2", "lzma2_stream"], name, &lzma2)?;
+        write_direct_seed(&root, &["lzip"], name, &lzip)?;
+
+        let plan = [0x00, 0x11, 0x22, 0x33, 0x66, 0x99, 0xCC, 0xFF];
+        let lzma_plan = [[0; 8].as_slice(), plan.as_slice()].concat();
+        write_planned_seed(&root, "lzma_stream", name, &lzma_plan, &lzma)?;
+        write_planned_seed(&root, "lzip_stream", name, &plan, &lzip)?;
+
+        write_seed(&root, "lzma2_mt_decode", name, size as u8, &lzma2)?;
+        write_seed(&root, "lzip_mt_decode", name, size as u8, &lzip)?;
         for (check_name, check_type) in [
             ("none", CheckType::None),
             ("crc32", CheckType::Crc32),
             ("crc64", CheckType::Crc64),
             ("sha256", CheckType::Sha256),
         ] {
+            let xz = valid_streams::xz(&payload, check_type);
+            write_direct_seed(
+                &root,
+                &["xz", "xz_stream"],
+                &format!("{name}-{check_name}"),
+                &xz,
+            )?;
             write_seed(
                 &root,
                 "xz_mt_decode",
                 &format!("{name}-{check_name}"),
                 size as u8,
-                &valid_streams::xz(&payload, check_type),
+                &xz,
             )?;
         }
     }
