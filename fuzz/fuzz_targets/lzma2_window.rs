@@ -1,7 +1,10 @@
-use std::io::{self, Read, Write};
+use std::{io::{self, Read, Write}, num::NonZeroU64};
 
 use liblzma::stream::{Filters, Stream};
-use lzma_rust2::{Lzma2Options, Lzma2Reader, Lzma2Writer, XzOptions, XzReader, XzWriter};
+use lzma_rust2::{
+    Lzma2Options, Lzma2Reader, Lzma2Writer, Lzma2WriterMt, XzOptions, XzReader, XzWriter,
+    XzWriterMt,
+};
 
 pub const MAX_INPUT_SIZE: usize = 4096;
 
@@ -64,11 +67,20 @@ pub fn roundtrip(data: &[u8]) -> Option<()> {
     let chunk_size = if data[2] & 2 == 0 { len } else { 8192 };
 
     if data[2] & 4 == 0 {
-        let mut writer = Lzma2Writer::new(output, options);
-        for chunk in payload.chunks(chunk_size) {
-            writer.write_all(chunk).unwrap();
-        }
-        let compressed = writer.finish().unwrap().bytes;
+        let compressed = if data[2] & 16 == 0 {
+            let mut writer = Lzma2Writer::new(output, options);
+            for chunk in payload.chunks(chunk_size) {
+                writer.write_all(chunk).unwrap();
+            }
+            writer.finish().unwrap().bytes
+        } else {
+            options.chunk_size = NonZeroU64::new(len as u64);
+            let mut writer = Lzma2WriterMt::new(output, options, 2).unwrap();
+            for chunk in payload.chunks(chunk_size) {
+                writer.write_all(chunk).unwrap();
+            }
+            writer.finish().unwrap().bytes
+        };
         decode(
             Lzma2Reader::new(compressed.as_slice(), dict_size, None),
             &payload,
@@ -86,11 +98,20 @@ pub fn roundtrip(data: &[u8]) -> Option<()> {
     } else {
         let mut xz_options = XzOptions::with_preset(1);
         xz_options.lzma_options = options.lzma_options;
-        let mut writer = XzWriter::new(output, xz_options).unwrap();
-        for chunk in payload.chunks(chunk_size) {
-            writer.write_all(chunk).unwrap();
-        }
-        let compressed = writer.finish().unwrap().bytes;
+        let compressed = if data[2] & 16 == 0 {
+            let mut writer = XzWriter::new(output, xz_options).unwrap();
+            for chunk in payload.chunks(chunk_size) {
+                writer.write_all(chunk).unwrap();
+            }
+            writer.finish().unwrap().bytes
+        } else {
+            xz_options.block_size = NonZeroU64::new(len as u64);
+            let mut writer = XzWriterMt::new(output, xz_options, 2).unwrap();
+            for chunk in payload.chunks(chunk_size) {
+                writer.write_all(chunk).unwrap();
+            }
+            writer.finish().unwrap().bytes
+        };
         decode(XzReader::new(compressed.as_slice(), false), &payload);
         decode(liblzma::read::XzDecoder::new(compressed.as_slice()), &payload);
     }

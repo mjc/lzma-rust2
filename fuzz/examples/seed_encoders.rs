@@ -95,6 +95,8 @@ fn main() -> std::io::Result<()> {
         ("raw-fragmented", [64, 1, 2, 2]),
         ("xz-small-dict", [128, 2, 4, 3]),
         ("xz-patterned", [255, 3, 15, 4]),
+        ("raw-threaded", [0, 0, 16, 1]),
+        ("xz-threaded", [128, 2, 20, 3]),
     ] {
         fs::write(directory.join(name), settings)?;
     }
