@@ -8,8 +8,7 @@ const MAX_STEPS: usize = 4096;
 const MEM_LIMIT_KB: u32 = 8 * 1024;
 
 fuzz_target!(|data: &[u8]| {
-    let mut decoder =
-        Lzma2Stream::new_mem_limit(LzmaOptions::DICT_SIZE_DEFAULT, MEM_LIMIT_KB);
+    let mut decoder = Lzma2Stream::new_mem_limit(LzmaOptions::DICT_SIZE_DEFAULT, MEM_LIMIT_KB);
     let mut output_buf = [0u8; 4096];
     let mut in_pos = 0;
     let mut total_out = 0;
