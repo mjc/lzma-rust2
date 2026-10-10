@@ -105,7 +105,8 @@ fn main() -> std::io::Result<()> {
             let mode = if suffix.contains("fields") { 2 } else { 1 };
             let head = raw_head(mode, raw_props, raw_dict_size, size);
             let raw_name = format!("{name}-{suffix}");
-            write_planned_seed(&root, "lzma_stream", &raw_name, &head, stream)?;
+            let raw_plan = [head.as_slice(), plan.as_slice()].concat();
+            write_planned_seed(&root, "lzma_stream", &raw_name, &raw_plan, stream)?;
         }
         write_planned_seed(&root, "lzma2_stream", name, &lzma2_plan, &lzma2)?;
         write_planned_seed(&root, "lzip_stream", name, &plan, &lzip)?;

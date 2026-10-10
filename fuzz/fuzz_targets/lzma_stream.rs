@@ -26,14 +26,40 @@ const HEAD_LEN: usize = 8;
 const PLAN_LEN: usize = 8;
 
 fn reference(head: &[u8], stream: &[u8]) -> Option<std::io::Result<Option<Vec<u8>>>> {
-    let decoder = match (head[0] >> 2) & 3 {
+    let mode = (head[0] >> 2) & 3;
+    if mode != 0 && head[0] & 1 != 0 {
+        let props = if mode == 1 {
+            head[1]
+        } else {
+            let lc = head[1] % 9;
+            let lp = (head[1] >> 4) % 5;
+            let pb = head[2] % 5;
+            (pb * 5 + lp) * 9 + lc
+        };
+        let dict_size = u32::from(u16::from_le_bytes([head[4], head[5]]));
+        let dict_size = if mode == 1 {
+            dict_size
+        } else {
+            dict_size.max(4096)
+        };
+        let mut input = Vec::with_capacity(13 + stream.len());
+        input.push(props);
+        input.extend_from_slice(&dict_size.to_le_bytes());
+        input.extend_from_slice(&u64::from(u16::from_le_bytes([head[6], head[7]])).to_le_bytes());
+        input.extend_from_slice(stream);
+        let decoder = Stream::new_lzma_decoder(REFERENCE_MEM_LIMIT).ok()?;
+        return Some(reference_decode::read_bounded(
+            liblzma::read::XzDecoder::new_stream(input.as_slice(), decoder),
+        ));
+    }
+
+    let decoder = match mode {
         0 => Stream::new_lzma_decoder(REFERENCE_MEM_LIMIT).ok()?,
         1 => {
             let mut properties = [0u8; 5];
             properties[0] = head[1];
-            properties[1..].copy_from_slice(
-                &u32::from(u16::from_le_bytes([head[4], head[5]])).to_le_bytes(),
-            );
+            properties[1..]
+                .copy_from_slice(&u32::from(u16::from_le_bytes([head[4], head[5]])).to_le_bytes());
             let mut filters = Filters::new();
             filters.lzma1_properties(&properties).ok()?;
             Stream::new_raw_decoder(&filters).ok()?
