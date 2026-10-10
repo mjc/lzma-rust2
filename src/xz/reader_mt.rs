@@ -269,11 +269,34 @@ impl<R: Read + Seek> XzReaderMt<R> {
         let mut block_header = vec![0; header_size];
         block_header[0] = header_size_encoded;
         reader.read_exact(&mut block_header[1..])?;
-        let (filters, properties, parsed_header_size) =
-            BlockHeader::parse_from_slice(&block_header)?;
-        if parsed_header_size != header_size {
+        let parsed_header = BlockHeader::parse_from_slice(&block_header)?;
+        if parsed_header.header_size != header_size {
             return Err(error_invalid_data("invalid XZ block header size"));
         }
+        if parsed_header
+            .uncompressed_size
+            .is_some_and(|size| size != block.uncompressed_size)
+        {
+            return Err(error_invalid_data(
+                "XZ block uncompressed size does not match index",
+            ));
+        }
+        let indexed_compressed_size = block
+            .unpadded_size
+            .checked_sub(header_size as u64)
+            .and_then(|size| size.checked_sub(block.check_type.checksum_size()))
+            .ok_or_else(|| error_invalid_data("XZ block is too small for its header and check"))?;
+        if parsed_header
+            .compressed_size
+            .is_some_and(|size| size != indexed_compressed_size)
+        {
+            return Err(error_invalid_data(
+                "XZ block compressed size does not match index",
+            ));
+        }
+
+        let filters = parsed_header.filters;
+        let properties = parsed_header.properties;
 
         let padding_needed = (4 - (block.unpadded_size % 4)) % 4;
         let total_block_size = block
@@ -597,7 +620,10 @@ fn decompress_xz_block(
     unpadded_size: u64,
     reserve_output: bool,
 ) -> io::Result<Vec<u8>> {
-    let (filters, properties, header_size) = BlockHeader::parse_from_slice(&block_data)?;
+    let header = BlockHeader::parse_from_slice(&block_data)?;
+    let filters = header.filters;
+    let properties = header.properties;
+    let header_size = header.header_size;
 
     let checksum_size = check_type.checksum_size() as usize;
     let unpadded_size = usize::try_from(unpadded_size)
@@ -620,6 +646,18 @@ fn decompress_xz_block(
     if compressed_data_end <= header_size {
         return Err(error_invalid_data(
             "Block data too short for compressed content",
+        ));
+    }
+
+    if header
+        .compressed_size
+        .is_some_and(|size| size != (compressed_data_end - header_size) as u64)
+        || header
+            .uncompressed_size
+            .is_some_and(|size| size != uncompressed_size)
+    {
+        return Err(error_invalid_data(
+            "XZ block sizes do not match the block contents",
         ));
     }
 

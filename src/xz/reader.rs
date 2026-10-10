@@ -185,6 +185,9 @@ pub struct XzReader<R: Read> {
     allow_multiple_streams: bool,
     blocks_processed: u64,
     mem_limit_kb: u32,
+    declared_compressed_size: Option<u64>,
+    declared_uncompressed_size: Option<u64>,
+    block_output_size: u64,
 }
 
 impl<R: Read> XzReader<R> {
@@ -210,6 +213,9 @@ impl<R: Read> XzReader<R> {
             allow_multiple_streams,
             blocks_processed: 0,
             mem_limit_kb,
+            declared_compressed_size: None,
+            declared_uncompressed_size: None,
+            block_output_size: 0,
         }
     }
 
@@ -243,6 +249,9 @@ impl<R: Read> XzReader<R> {
             Some(block_header) => {
                 // Check before replacing the reader to preserve access to the input on error.
                 check_memory_limit(&block_header, self.mem_limit_kb)?;
+                self.declared_compressed_size = block_header.compressed_size;
+                self.declared_uncompressed_size = block_header.uncompressed_size;
+                self.block_output_size = 0;
                 let base_reader: FilterReader<R> =
                     core::mem::replace(&mut self.reader, FilterReader::Dummy);
 
@@ -444,6 +453,10 @@ impl<R: Read> Read for XzReader<R> {
                 let bytes_read = self.reader.read(buf)?;
 
                 if bytes_read > 0 {
+                    self.block_output_size = self
+                        .block_output_size
+                        .checked_add(bytes_read as u64)
+                        .ok_or_else(|| error_invalid_data("XZ block output size overflow"))?;
                     if let Some(ref mut calc) = self.checksum_calculator {
                         calc.update(&buf[..bytes_read]);
                     }
@@ -456,6 +469,18 @@ impl<R: Read> Read for XzReader<R> {
                         reader.into_inner(),
                         compressed_bytes,
                     ));
+
+                    if self
+                        .declared_compressed_size
+                        .is_some_and(|size| size != compressed_bytes)
+                        || self
+                            .declared_uncompressed_size
+                            .is_some_and(|size| size != self.block_output_size)
+                    {
+                        return Err(error_invalid_data(
+                            "XZ block sizes do not match the block contents",
+                        ));
+                    }
 
                     self.consume_padding(compressed_bytes)?;
                     self.verify_block_checksum()?;
@@ -510,6 +535,8 @@ pub struct XzStream {
     block_header_size: u64,
     block_compressed_size: u64,
     block_uncompressed_size: u64,
+    declared_compressed_size: Option<u64>,
+    declared_uncompressed_size: Option<u64>,
     index_records: Vec<IndexRecord>,
     index_crc: Crc32,
     index_size: usize,
@@ -542,6 +569,8 @@ impl XzStream {
             block_header_size: 0,
             block_compressed_size: 0,
             block_uncompressed_size: 0,
+            declared_compressed_size: None,
+            declared_uncompressed_size: None,
             index_records: Vec::new(),
             index_crc: Crc32::new(),
             index_size: 0,
@@ -885,8 +914,21 @@ impl XzStream {
 
     fn finish_lzma2_block(&mut self) -> Result<()> {
         let lzma2 = self.lzma2.as_ref().unwrap();
-        self.block_compressed_size = lzma2.total_in();
-        self.block_uncompressed_size = lzma2.total_out();
+        let compressed_size = lzma2.total_in();
+        let uncompressed_size = lzma2.total_out();
+        if self
+            .declared_compressed_size
+            .is_some_and(|size| size != compressed_size)
+            || self
+                .declared_uncompressed_size
+                .is_some_and(|size| size != uncompressed_size)
+        {
+            return Err(error_invalid_data(
+                "XZ block sizes do not match the block contents",
+            ));
+        }
+        self.block_compressed_size = compressed_size;
+        self.block_uncompressed_size = uncompressed_size;
 
         let pad_needed = ((4 - (self.block_compressed_size % 4)) % 4) as usize;
         if pad_needed > 0 {
@@ -988,19 +1030,9 @@ impl XzStream {
     fn process_block_header_body(&mut self, header_size: usize) -> Result<()> {
         let data = &self.accum[..header_size];
 
-        let crc_offset = header_size - 4;
-        let expected_crc = u32::from_le_bytes([
-            data[crc_offset],
-            data[crc_offset + 1],
-            data[crc_offset + 2],
-            data[crc_offset + 3],
-        ]);
-        let actual_crc = Crc32::checksum(&data[..crc_offset]);
-        if expected_crc != actual_crc {
-            return Err(error_invalid_data("block header CRC32 mismatch"));
-        }
-
-        let (filters, properties, _) = BlockHeader::parse_from_slice(data)?;
+        let block_header = BlockHeader::parse_from_slice(data)?;
+        let filters = block_header.filters;
+        let properties = block_header.properties;
 
         let mut lzma2_dict_size = 0u32;
         let mut found_lzma2 = false;
@@ -1047,9 +1079,11 @@ impl XzStream {
         self.filter_buf.clear();
         self.filter_pos = 0;
         self.block_count += 1;
-        self.block_header_size = header_size as u64;
+        self.block_header_size = block_header.header_size as u64;
         self.block_compressed_size = 0;
         self.block_uncompressed_size = 0;
+        self.declared_compressed_size = block_header.compressed_size;
+        self.declared_uncompressed_size = block_header.uncompressed_size;
 
         self.state = XzStreamState::Lzma2Data;
         self.accum.clear();

@@ -1,10 +1,12 @@
 use std::{
-    io::{Cursor, Read, Write},
+    io::{Cursor, Error, ErrorKind, Read, Write},
     num::NonZeroU64,
     sync::{Arc, Mutex},
 };
 
-use lzma_rust2::{CheckType, XzOptions, XzReader, XzReaderMt, XzWriter, XzWriterMt};
+use lzma_rust2::{
+    Action, CheckType, Status, XzOptions, XzReader, XzReaderMt, XzStream, XzWriter, XzWriterMt,
+};
 
 static EXECUTABLE: &str = "tests/data/executable.exe";
 static PG100: &str = "tests/data/pg100.txt";
@@ -40,6 +42,140 @@ fn decode_blocks(compressed: &[u8]) -> Vec<u8> {
     }
 
     decoded
+}
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &byte in data {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+fn repair_block_header_crc(stream: &mut [u8]) {
+    let block_start = 12;
+    let header_size = (usize::from(stream[block_start]) + 1) * 4;
+    let crc_start = block_start + header_size - 4;
+    let crc = crc32(&stream[block_start..crc_start]).to_le_bytes();
+    stream[crc_start..crc_start + 4].copy_from_slice(&crc);
+}
+
+fn read_vli(data: &[u8], offset: &mut usize) -> u64 {
+    let mut value = 0;
+    let mut shift = 0;
+    loop {
+        let byte = data[*offset];
+        *offset += 1;
+        value |= u64::from(byte & 0x7F) << shift;
+        if byte & 0x80 == 0 {
+            return value;
+        }
+        shift += 7;
+    }
+}
+
+fn block_with_correct_declared_sizes() -> Vec<u8> {
+    let mut options = XzOptions::with_preset(1);
+    options.check_type = CheckType::Crc32;
+    let mut writer = XzWriter::new(Vec::new(), options).unwrap();
+    writer.write_all(b"x").unwrap();
+    let mut stream = writer.finish().unwrap();
+
+    let footer_start = stream.len() - 12;
+    let index_size = (u32::from_le_bytes(
+        stream[footer_start + 4..footer_start + 8]
+            .try_into()
+            .unwrap(),
+    ) as usize
+        + 1)
+        * 4;
+    let index_start = footer_start - index_size;
+    let mut index_offset = index_start + 2;
+    let unpadded_size = read_vli(&stream, &mut index_offset);
+    let block_start = 12;
+    let header_size = (usize::from(stream[block_start]) + 1) * 4;
+    let compressed_size = unpadded_size - header_size as u64 - 4;
+    assert!(compressed_size < 0x80);
+
+    stream[block_start + 1] |= 0xC0;
+    stream.copy_within(block_start + 2..block_start + 5, block_start + 4);
+    stream[block_start + 2] = compressed_size as u8;
+    stream[block_start + 3] = 1;
+    repair_block_header_crc(&mut stream);
+    stream
+}
+
+fn stream_error(data: &[u8]) -> Error {
+    let mut decoder = XzStream::new(false);
+    let mut output = [0u8; 4096];
+    let mut in_pos = 0;
+
+    for _ in 0..64 {
+        match decoder.process(&data[in_pos..], &mut output, Action::Finish) {
+            Ok(result) => {
+                in_pos += result.bytes_consumed;
+                assert_ne!(result.status, Status::StreamEnd, "the stream was accepted");
+            }
+            Err(error) => return error,
+        }
+    }
+    panic!("the stream neither ended nor failed");
+}
+
+fn decode_stream(data: &[u8]) -> Vec<u8> {
+    let mut decoder = XzStream::new(false);
+    let mut output = [0u8; 4096];
+    let mut in_pos = 0;
+    let mut decoded = Vec::new();
+
+    loop {
+        let result = decoder
+            .process(&data[in_pos..], &mut output, Action::Finish)
+            .unwrap();
+        in_pos += result.bytes_consumed;
+        decoded.extend_from_slice(&output[..result.bytes_produced]);
+        if result.status == Status::StreamEnd {
+            return decoded;
+        }
+        assert!(result.bytes_consumed > 0 || result.bytes_produced > 0);
+    }
+}
+
+fn assert_all_readers_reject(stream: &[u8]) {
+    let mut output = Vec::new();
+    assert_eq!(
+        XzReader::new(stream, false)
+            .read_to_end(&mut output)
+            .unwrap_err()
+            .kind(),
+        ErrorKind::InvalidData
+    );
+
+    let mt_error = match XzReaderMt::new(Cursor::new(stream), false, 2) {
+        Ok(mut reader) => reader.read_to_end(&mut Vec::new()).unwrap_err(),
+        Err(error) => error,
+    };
+    assert_eq!(mt_error.kind(), ErrorKind::InvalidData);
+    assert_eq!(stream_error(stream).kind(), ErrorKind::InvalidData);
+}
+
+fn block_with_declared_size(flag: u8) -> Vec<u8> {
+    let mut writer = XzWriter::new(Vec::new(), XzOptions::with_preset(1)).unwrap();
+    writer.write_all(b"x").unwrap();
+    let mut stream = writer.finish().unwrap();
+    let block_start = 12;
+    let header_size = (usize::from(stream[block_start]) + 1) * 4;
+    assert_eq!(header_size, 12);
+
+    stream[block_start + 1] |= flag;
+    stream.copy_within(block_start + 2..block_start + 5, block_start + 3);
+    stream[block_start + 2] = 0;
+    repair_block_header_crc(&mut stream);
+    stream
 }
 
 #[test]
@@ -240,6 +376,54 @@ fn corrupt_block_header_crc_is_rejected_by_both_readers() {
             .kind(),
         std::io::ErrorKind::InvalidData
     );
+}
+
+#[test]
+fn block_header_crc_bytes_cannot_supply_missing_filter_properties() {
+    let stream = [
+        0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00, 0x00, 0x01, 0x69, 0x22, 0xDE, 0x36, 0x01, 0x00, 0x21,
+        0x01, 0x0C, 0x9D, 0x60, 0x62, 0x01, 0x00, 0x00, 0x78, 0x00, 0x00, 0x00, 0x00, 0x83, 0x16,
+        0xDC, 0x8C, 0x00, 0x01, 0x11, 0x01, 0xAD, 0xA6, 0x58, 0x04, 0x90, 0x42, 0x99, 0x0D, 0x01,
+        0x00, 0x00, 0x00, 0x00, 0x01, 0x59, 0x5A,
+    ];
+    assert_all_readers_reject(&stream);
+}
+
+#[test]
+fn nonzero_block_header_padding_is_rejected_with_a_valid_crc() {
+    let mut writer = XzWriter::new(Vec::new(), XzOptions::with_preset(1)).unwrap();
+    writer.write_all(b"x").unwrap();
+    let mut stream = writer.finish().unwrap();
+    stream[17] = 1;
+    repair_block_header_crc(&mut stream);
+
+    assert_all_readers_reject(&stream);
+}
+
+#[test]
+fn optional_block_sizes_must_match_the_block_contents() {
+    for flag in [0x40, 0x80] {
+        assert_all_readers_reject(&block_with_declared_size(flag));
+    }
+}
+
+#[test]
+fn matching_optional_block_sizes_are_accepted_by_all_readers() {
+    let stream = block_with_correct_declared_sizes();
+
+    let mut output = Vec::new();
+    XzReader::new(stream.as_slice(), false)
+        .read_to_end(&mut output)
+        .unwrap();
+    assert_eq!(output, b"x");
+
+    output.clear();
+    XzReaderMt::new(Cursor::new(&stream), false, 2)
+        .unwrap()
+        .read_to_end(&mut output)
+        .unwrap();
+    assert_eq!(output, b"x");
+    assert_eq!(decode_stream(&stream), b"x");
 }
 
 #[test]
