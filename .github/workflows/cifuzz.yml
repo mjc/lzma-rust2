@@ -112,6 +112,12 @@ jobs:
           limits=()
           runtime=180
           case '${{matrix.target}}' in
+            bcj2_decode|bcj2_roundtrip)
+              limits=(-max_len=65539 -timeout=10 -rss_limit_mb=512)
+              ;;
+            lzma|lzma_stream|lzma2|lzma2_stream|xz|xz_stream|lzip|lzip_stream)
+              limits=(-max_len=65536 -timeout=10 -rss_limit_mb=512)
+              ;;
             lzma_roundtrip|lzma2_roundtrip|lzma2_mt_roundtrip)
               limits=(-max_len=65548 -timeout=10 -rss_limit_mb=512)
               ;;
