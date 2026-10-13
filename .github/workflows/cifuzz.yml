@@ -108,6 +108,8 @@ jobs:
         if: matrix.decoder_seed
         run: cargo test --manifest-path fuzz/Cargo.toml --test decoder_mt ${{matrix.cargo_args}}
       - name: Run fuzzing
+        env:
+          ASAN_OPTIONS: quarantine_size_mb=64
         run: |
           limits=()
           runtime=180
