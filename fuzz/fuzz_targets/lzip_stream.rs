@@ -64,11 +64,13 @@ fuzz_target!(|data: &[u8]| {
         decoded.extend_from_slice(&output[..result.bytes_produced]);
 
         if result.status == Status::StreamEnd {
-            let reference = reference_decode::read_bounded(liblzma::read::XzDecoder::new_stream(
-                stream,
-                Stream::new_lzip_decoder(REFERENCE_MEM_LIMIT, CONCATENATED).unwrap(),
-            ));
-            reference_decode::compare(Ok(Some(decoded)), reference);
+            if in_pos == stream.len() && decoder.unused_input().is_empty() {
+                let reference = reference_decode::read_bounded(liblzma::read::XzDecoder::new_stream(
+                    stream,
+                    Stream::new_lzip_decoder(REFERENCE_MEM_LIMIT, CONCATENATED).unwrap(),
+                ));
+                reference_decode::compare(Ok(Some(decoded)), reference);
+            }
             return;
         }
 

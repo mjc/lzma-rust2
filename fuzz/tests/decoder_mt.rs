@@ -111,6 +111,21 @@ fn input_bounds_are_enforced() {
 }
 
 #[test]
+fn parallel_lzip_reader_rejects_uncovered_prefix_bytes() {
+    let member = valid_streams::lzip(b"parallel LZIP prefix check");
+
+    for prefix_len in 1..20 {
+        let mut stream = vec![0; prefix_len];
+        stream.extend_from_slice(&member);
+
+        assert!(
+            LzipReaderMt::new_mem_limit(Cursor::new(stream), 16 * 1024, 2).is_err(),
+            "accepted {prefix_len} bytes before the first member"
+        );
+    }
+}
+
+#[test]
 fn output_cap_does_not_compare_incomplete_xz_decodes() {
     let mut options = lzma_rust2::XzOptions::with_preset(1);
     options.check_type = CheckType::Crc32;
