@@ -381,10 +381,10 @@ fn xz_with_huge_index_record(unpadded_size: u64) -> Vec<u8> {
 #[test]
 fn xz_mt_huge_index_record_does_not_oom() {
     let input = xz_with_huge_index_record(1 << 60);
-
-    let mut reader = XzReaderMt::new(std::io::Cursor::new(input), false, 2).unwrap();
-    let mut output = Vec::new();
-    assert!(reader.read_to_end(&mut output).is_err());
+    let error = XzReaderMt::new(std::io::Cursor::new(input), false, 2)
+        .err()
+        .expect("oversized indexed block must be rejected");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
 }
 
 struct FaultyReader {

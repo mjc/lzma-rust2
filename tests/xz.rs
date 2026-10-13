@@ -92,6 +92,33 @@ fn small_writes_with_flush_round_trip() {
 }
 
 #[test]
+fn block_padding_accepts_short_input_reads() {
+    struct OneByteReader<'a>(&'a [u8]);
+
+    impl Read for OneByteReader<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let count = buf.len().min(self.0.len()).min(1);
+            buf[..count].copy_from_slice(&self.0[..count]);
+            self.0 = &self.0[count..];
+            Ok(count)
+        }
+    }
+
+    for size in 1..=16 {
+        let input = vec![b'x'; size];
+        let mut writer = XzWriter::new(Vec::new(), XzOptions::with_preset(1)).unwrap();
+        writer.write_all(&input).unwrap();
+        let compressed = writer.finish().unwrap();
+
+        let mut decoded = Vec::new();
+        XzReader::new(OneByteReader(&compressed), false)
+            .read_to_end(&mut decoded)
+            .unwrap();
+        assert_eq!(decoded, input);
+    }
+}
+
+#[test]
 fn round_trip_executable_0() {
     test_round_trip(EXECUTABLE, 0);
 }

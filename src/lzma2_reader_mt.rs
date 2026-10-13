@@ -143,8 +143,10 @@ impl<R: Read> Lzma2ReaderMt<R> {
         match self.inner.read_exact(&mut control_buf) {
             Ok(_) => (),
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
-                // Clean end of stream.
-                return Ok(false);
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "missing LZMA2 end marker",
+                ));
             }
             Err(error) => return Err(error),
         }
@@ -291,8 +293,13 @@ impl<R: Read> Lzma2ReaderMt<R> {
                                 // Send any remaining data as the final work unit.
                                 self.send_work_unit();
                                 self.last_sequence_id =
-                                    Some(self.next_sequence_to_dispatch.saturating_sub(1));
-                                self.state = State::Draining;
+                                    self.next_sequence_to_dispatch.checked_sub(1);
+                                self.work_queue.close();
+                                self.state = if self.last_sequence_id.is_some() {
+                                    State::Draining
+                                } else {
+                                    State::Finished
+                                };
                                 continue;
                             }
                             Err(error) => {

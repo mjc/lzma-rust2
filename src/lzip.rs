@@ -268,6 +268,10 @@ fn scan_members<R: Read + Seek>(mut reader: R) -> Result<(R, Vec<LzipMember>)> {
         current_pos = member_start;
     }
 
+    if current_pos != 0 {
+        return Err(error_invalid_data("invalid data before first LZIP member"));
+    }
+
     reader.seek(SeekFrom::Start(0))?;
 
     if members.is_empty() {

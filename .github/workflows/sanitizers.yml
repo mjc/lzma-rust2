@@ -1,0 +1,239 @@
+name: Sanitizers
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: ${{ matrix.sanitizer }} / ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sanitizer: leak
+            target: lzma2_mt_decode
+            decoder_seed: true
+          - sanitizer: leak
+            target: xz_mt_decode
+            decoder_seed: true
+          - sanitizer: leak
+            target: lzip_mt_decode
+            decoder_seed: true
+          - sanitizer: leak
+            target: lzma
+            decoder_seed: true
+          - sanitizer: leak
+            target: lzma_stream
+            decoder_seed: true
+          - sanitizer: leak
+            target: lzma2
+            decoder_seed: true
+          - sanitizer: leak
+            target: lzma2_stream
+            decoder_seed: true
+          - sanitizer: leak
+            target: xz
+            decoder_seed: true
+          - sanitizer: leak
+            target: xz_stream
+            decoder_seed: true
+          - sanitizer: leak
+            target: lzip
+            decoder_seed: true
+          - sanitizer: leak
+            target: lzip_stream
+            decoder_seed: true
+          - sanitizer: leak
+            target: lzma2_mt_roundtrip
+            encoder_seed: true
+          - sanitizer: leak
+            target: xz_mt_roundtrip
+            encoder_seed: true
+          - sanitizer: leak
+            target: lzip_mt_roundtrip
+            encoder_seed: true
+          - sanitizer: leak
+            target: bcj2_decode
+            decoder_seed: true
+          - sanitizer: leak
+            target: bcj2_roundtrip
+            encoder_seed: true
+          - sanitizer: leak
+            target: lzma_roundtrip
+            encoder_seed: true
+          - sanitizer: leak
+            target: lzma2_roundtrip
+            encoder_seed: true
+          - sanitizer: leak
+            target: xz_roundtrip
+            encoder_seed: true
+          - sanitizer: leak
+            target: lzip_roundtrip
+            encoder_seed: true
+          - sanitizer: leak
+            target: lzma2_window_roundtrip
+            encoder_seed: true
+          - sanitizer: memory
+            target: lzma2_mt_decode
+            decoder_seed: true
+          - sanitizer: memory
+            target: xz_mt_decode
+            decoder_seed: true
+          - sanitizer: memory
+            target: lzip_mt_decode
+            decoder_seed: true
+          - sanitizer: memory
+            target: lzma
+            decoder_seed: true
+          - sanitizer: memory
+            target: lzma_stream
+            decoder_seed: true
+          - sanitizer: memory
+            target: lzma2
+            decoder_seed: true
+          - sanitizer: memory
+            target: lzma2_stream
+            decoder_seed: true
+          - sanitizer: memory
+            target: xz
+            decoder_seed: true
+          - sanitizer: memory
+            target: xz_stream
+            decoder_seed: true
+          - sanitizer: memory
+            target: lzip
+            decoder_seed: true
+          - sanitizer: memory
+            target: lzip_stream
+            decoder_seed: true
+          - sanitizer: memory
+            target: lzma2_window_roundtrip
+            encoder_seed: true
+          - sanitizer: memory
+            target: bcj2_decode
+            decoder_seed: true
+          - sanitizer: memory
+            target: bcj2_roundtrip
+            encoder_seed: true
+          - sanitizer: memory
+            target: lzma_roundtrip
+            encoder_seed: true
+          - sanitizer: memory
+            target: lzma2_roundtrip
+            encoder_seed: true
+          - sanitizer: memory
+            target: xz_roundtrip
+            encoder_seed: true
+          - sanitizer: memory
+            target: lzip_roundtrip
+            encoder_seed: true
+          - sanitizer: memory
+            target: lzma2_mt_roundtrip
+            encoder_seed: true
+          - sanitizer: memory
+            target: xz_mt_roundtrip
+            encoder_seed: true
+          - sanitizer: memory
+            target: lzip_mt_roundtrip
+            encoder_seed: true
+          - sanitizer: thread
+            target: lzma2_mt_decode
+            decoder_seed: true
+          - sanitizer: thread
+            target: xz_mt_decode
+            decoder_seed: true
+          - sanitizer: thread
+            target: lzip_mt_decode
+            decoder_seed: true
+          - sanitizer: thread
+            target: lzma2_mt_roundtrip
+            encoder_seed: true
+          - sanitizer: thread
+            target: xz_mt_roundtrip
+            encoder_seed: true
+          - sanitizer: thread
+            target: lzip_mt_roundtrip
+            encoder_seed: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@f0d5300ba8908d942c808f4d31c08471d7798ba3
+        with:
+          target: x86_64-unknown-linux-gnu
+          components: rust-src
+      - name: Select nightly Cargo
+        run: echo "$(dirname "$(rustup which --toolchain nightly cargo)")" >> "$GITHUB_PATH"
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Instrument native dependencies for MemorySanitizer
+        if: matrix.sanitizer == 'memory'
+        run: |
+          echo "CC=clang" >> "$GITHUB_ENV"
+          echo "CFLAGS=-fsanitize=memory -fno-omit-frame-pointer" >> "$GITHUB_ENV"
+      - name: Seed decoder corpus
+        if: matrix.decoder_seed
+        run: cargo run --manifest-path fuzz/Cargo.toml --example seed_decoders
+      - name: Seed encoder corpus
+        if: matrix.encoder_seed
+        run: cargo run --manifest-path fuzz/Cargo.toml --example seed_encoders
+      - name: Run sanitizer fuzzing
+        run: >-
+          cargo fuzz run ${{ matrix.target }}
+          --sanitizer ${{ matrix.sanitizer }}
+          --build-std
+          -- -max_total_time=30 -max_len=65548 -timeout=10 -rss_limit_mb=512
+
+  tests:
+    name: address / library tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@f0d5300ba8908d942c808f4d31c08471d7798ba3
+        with:
+          target: x86_64-unknown-linux-gnu
+          components: rust-src
+      - name: Select nightly Cargo
+        run: echo "$(dirname "$(rustup which --toolchain nightly cargo)")" >> "$GITHUB_PATH"
+      - name: Run AddressSanitizer tests
+        env:
+          RUSTFLAGS: -Zsanitizer=address
+        run: cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --lib --all-features
+
+  miri:
+    name: Miri (single-threaded core)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@f0d5300ba8908d942c808f4d31c08471d7798ba3
+        with:
+          components: miri
+      - name: Select nightly Cargo
+        run: echo "$(dirname "$(rustup which --toolchain nightly cargo)")" >> "$GITHUB_PATH"
+      - name: Run Miri tests
+        run: cargo miri test --lib --no-default-features --features std -- --skip reader_mt --skip work_queue --skip work_pool

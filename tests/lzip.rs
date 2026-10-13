@@ -31,6 +31,18 @@ fn test_round_trip(path: &str, level: u32) {
 }
 
 #[test]
+fn memory_limit_rejects_large_dictionary_before_decoding() {
+    let mut archive = LzipWriter::new(Vec::new(), LzipOptions::with_preset(0))
+        .finish()
+        .unwrap();
+    archive[5] = 0x1D;
+
+    let mut reader = LzipReader::new_mem_limit(archive.as_slice(), 1024);
+    let error = reader.read(&mut [0]).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::OutOfMemory);
+}
+
+#[test]
 fn round_trip_executable_0() {
     test_round_trip(EXECUTABLE, 0);
 }

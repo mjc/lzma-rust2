@@ -1,6 +1,10 @@
 #![no_main]
 
+#[path = "reference_decode.rs"]
+mod reference_decode;
+
 use libfuzzer_sys::fuzz_target;
+use liblzma::stream::{Filters, Stream};
 use lzma_rust2::{Action, LzmaStream, Status};
 
 /// How much input to hand over in one call. A symbol is at most 20 bytes long
@@ -15,10 +19,71 @@ const MAX_OUTPUT: usize = 1 << 18;
 const MAX_STEPS: usize = 4096;
 
 const MEM_LIMIT_KB: u32 = 8 * 1024;
+const REFERENCE_MEM_LIMIT: u64 = 16 * 1024 * 1024;
 
 /// First 8 bytes say how to build the decoder, next 8 say how to feed it.
 const HEAD_LEN: usize = 8;
 const PLAN_LEN: usize = 8;
+
+fn reference(head: &[u8], stream: &[u8]) -> Option<std::io::Result<Option<Vec<u8>>>> {
+    let mode = (head[0] >> 2) & 3;
+    if mode != 0 && head[0] & 1 != 0 {
+        let props = if mode == 1 {
+            head[1]
+        } else {
+            let lc = head[1] % 9;
+            let lp = (head[1] >> 4) % 5;
+            let pb = head[2] % 5;
+            (pb * 5 + lp) * 9 + lc
+        };
+        let dict_size = u32::from(u16::from_le_bytes([head[4], head[5]]));
+        let dict_size = if mode == 1 {
+            dict_size
+        } else {
+            dict_size.max(4096)
+        };
+        let mut input = Vec::with_capacity(13 + stream.len());
+        input.push(props);
+        input.extend_from_slice(&dict_size.to_le_bytes());
+        input.extend_from_slice(&u64::from(u16::from_le_bytes([head[6], head[7]])).to_le_bytes());
+        input.extend_from_slice(stream);
+        let decoder = Stream::new_lzma_decoder(REFERENCE_MEM_LIMIT).ok()?;
+        return Some(reference_decode::read_bounded(
+            liblzma::read::XzDecoder::new_stream(input.as_slice(), decoder),
+        ));
+    }
+
+    let decoder = match mode {
+        0 => Stream::new_lzma_decoder(REFERENCE_MEM_LIMIT).ok()?,
+        1 => {
+            let mut properties = [0u8; 5];
+            properties[0] = head[1];
+            properties[1..]
+                .copy_from_slice(&u32::from(u16::from_le_bytes([head[4], head[5]])).to_le_bytes());
+            let mut filters = Filters::new();
+            filters.lzma1_properties(&properties).ok()?;
+            Stream::new_raw_decoder(&filters).ok()?
+        }
+        _ => {
+            let lc = u32::from(head[1] % 9);
+            let lp = u32::from((head[1] >> 4) % 5);
+            let pb = u32::from(head[2] % 5);
+            let dict_size = u32::from(u16::from_le_bytes([head[4], head[5]])).max(4096);
+            let mut options = liblzma::stream::LzmaOptions::new_preset(6).ok()?;
+            options
+                .dict_size(dict_size)
+                .literal_context_bits(lc)
+                .literal_position_bits(lp)
+                .position_bits(pb);
+            let mut filters = Filters::new();
+            filters.lzma1(&options);
+            Stream::new_raw_decoder(&filters).ok()?
+        }
+    };
+    Some(reference_decode::read_bounded(
+        liblzma::read::XzDecoder::new_stream(stream, decoder),
+    ))
+}
 
 fuzz_target!(|data: &[u8]| {
     if data.len() < HEAD_LEN + PLAN_LEN {
@@ -66,8 +131,8 @@ fuzz_target!(|data: &[u8]| {
     };
 
     let mut output = [0u8; 4096];
+    let mut decoded = Vec::new();
     let mut in_pos = 0usize;
-    let mut total_out = 0usize;
 
     for step in 0..MAX_STEPS {
         // One plan byte per call: the low half picks the chunk size, the high
@@ -91,9 +156,14 @@ fuzz_target!(|data: &[u8]| {
         };
 
         in_pos += result.bytes_consumed;
-        total_out += result.bytes_produced;
+        decoded.extend_from_slice(&output[..result.bytes_produced]);
 
         if result.status == Status::StreamEnd {
+            if preset_dict.is_none() {
+                if let Some(reference) = reference(head, stream) {
+                    reference_decode::compare(Ok(Some(decoded)), reference);
+                }
+            }
             return;
         }
 
@@ -107,7 +177,7 @@ fuzz_target!(|data: &[u8]| {
             stream.len(),
         );
 
-        if total_out > MAX_OUTPUT {
+        if decoded.len() > MAX_OUTPUT {
             return;
         }
     }
