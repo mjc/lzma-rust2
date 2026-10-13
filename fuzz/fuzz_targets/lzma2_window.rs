@@ -1,4 +1,7 @@
-use std::{io::{self, Read, Write}, num::NonZeroU64};
+use std::{
+    io::{self, Read, Write},
+    num::NonZeroU64,
+};
 
 use liblzma::stream::{Filters, Stream};
 use lzma_rust2::{
@@ -113,7 +116,10 @@ pub fn roundtrip(data: &[u8]) -> Option<()> {
             writer.finish().unwrap().bytes
         };
         decode(XzReader::new(compressed.as_slice(), false), &payload);
-        decode(liblzma::read::XzDecoder::new(compressed.as_slice()), &payload);
+        decode(
+            liblzma::read::XzDecoder::new(compressed.as_slice()),
+            &payload,
+        );
     }
     Some(())
 }
