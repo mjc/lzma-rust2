@@ -462,6 +462,16 @@ impl<W: Write> BufferedOutput<W> {
                 }
                 self.pos += size;
             }
+            _ if buf.len() <= 64 => {
+                let size = buf.len();
+                if self.pos > OUTPUT_BUF_SIZE - size {
+                    self.flush_buffer()?;
+                }
+                let output = &mut self.buffer[self.pos..self.pos + size];
+                output[..32].copy_from_slice(&buf[..32]);
+                output[size - 32..].copy_from_slice(&buf[size - 32..]);
+                self.pos += size;
+            }
             _ => self.write_all(buf)?,
         }
         Ok(())
@@ -564,5 +574,22 @@ mod tests {
         writer.write_all(&[0x90]).unwrap();
         assert_eq!(writer.get_uncompressed_size(), u64::MAX);
         assert_eq!(writer.finish().unwrap()[0], [0x90]);
+    }
+
+    #[test]
+    fn main_spans_preserve_bytes_across_output_flushes() {
+        for size in 1..=129 {
+            let input: Vec<u8> = (0..size).map(|i| (i * 37 + size) as u8).collect();
+            for remaining in [0, 1, size - 1, size, size + 1] {
+                let prefix = vec![0x90; OUTPUT_BUF_SIZE - remaining];
+                let mut output = BufferedOutput::new(Vec::new());
+                output.write_all(&prefix).unwrap();
+                output.write_main(&input, *input.last().unwrap()).unwrap();
+                output.flush().unwrap();
+                let mut expected = prefix;
+                expected.extend_from_slice(&input);
+                assert_eq!(output.inner, expected, "size={size} remaining={remaining}");
+            }
+        }
     }
 }
