@@ -466,7 +466,7 @@ fn short_main_spans_and_large_literals_preserve_streams() {
 #[test]
 #[cfg(feature = "encoder")]
 fn partial_buffer_flush_and_large_write_failures_are_sticky() {
-    let short_spans = (3..=32).map(|size| {
+    let short_spans = (3..=128).map(|size| {
         let mut input = vec![0x91; size - 1];
         input.extend_from_slice(&[0xE8, 0, 0, 0, 0]);
         (16384 - size + 1, input, 5)
